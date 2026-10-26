@@ -7,31 +7,64 @@ trap 'rm -rf -- "$work"' EXIT
 mkdir "$work/bin" "$work/remote" "$work/source" "$work/state"
 export PATH="$work/bin:$PATH" TEST_CUSTODY="$work"
 export GH_REPO=fixture/repo BUILD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa BUILD_RUN_ID=100 GITHUB_RUN_ID=200
+# Never inherit the hosted job's environment file or custody pointer.
+export GITHUB_ENV="$work/github-env"
+unset NW_CUSTODY_RELEASE_ID
 cat > "$work/bin/gh" <<'STUB'
 #!/bin/bash
 set -euo pipefail
 [[ ${TEST_NETWORK_FAIL:-false} != true ]] || exit 42
-if [[ $1 == api && $* == *'/releases?per_page=100'* ]]; then
-  [[ ! -f $TEST_CUSTODY/remote/release.json ]] || cat "$TEST_CUSTODY/remote/release.json"
-elif [[ $1 == release && $2 == create ]]; then
-  printf '%s\n' create >> "$TEST_CUSTODY/writes"
-  jq -n --arg sha "$BUILD_SHA" --arg tag "$3" '{id:1,tag_name:$tag,target_commitish:$sha,draft:true,prerelease:true,assets:[]}' > "$TEST_CUSTODY/remote/release.json"
-elif [[ $1 == release && $2 == upload ]]; then
-  name=$(basename "$4")
-  [[ ! -e $TEST_CUSTODY/remote/$name ]] || exit 93
-  cp "$4" "$TEST_CUSTODY/remote/$name"
-  printf 'upload %s\n' "$name" >> "$TEST_CUSTODY/writes"
-  jq --arg name "$name" '.assets += [{id:((.assets | length) + 10),name:$name}]' "$TEST_CUSTODY/remote/release.json" > "$TEST_CUSTODY/remote/next.json"
-  mv "$TEST_CUSTODY/remote/next.json" "$TEST_CUSTODY/remote/release.json"
-elif [[ $1 == api && $* == *'/releases/assets/'* ]]; then
-  id=${!#}
-  id=${id##*/}
-  name=$(jq -er --argjson id "$id" '.assets[] | select(.id == $id) | .name' "$TEST_CUSTODY/remote/release.json")
-  cat "$TEST_CUSTODY/remote/$name"
-else
-  printf 'Unexpected fixture gh: %s\n' "$*" >&2
-  exit 90
-fi
+[[ $1 == api ]] || exit 90
+shift
+method=GET input= endpoint= tag= target=
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --method) method=$2; shift ;;
+    --input) input=$2; shift ;;
+    -f|-F)
+      case $2 in tag_name=*) tag=${2#*=} ;; target_commitish=*) target=${2#*=} ;; esac
+      shift ;;
+    -H|--jq) shift ;;
+    --paginate) ;;
+    *) endpoint=$1 ;;
+  esac
+  shift
+done
+remote=$TEST_CUSTODY/remote
+case $method:$endpoint in
+  GET:repos/fixture/repo/releases\?*)
+    printf 'list\n' >> "$TEST_CUSTODY/reads"
+    if [[ ${TEST_BAD_INVENTORY:-false} == true ]]; then printf '{'; exit 0; fi
+    [[ ${TEST_OMIT_DRAFT:-false} != true ]] || exit 0
+    [[ ! -f $remote/release.json ]] || cat "$remote/release.json" ;;
+  POST:repos/fixture/repo/releases)
+    printf 'create\n' >> "$TEST_CUSTODY/writes"
+    [[ $target == "$BUILD_SHA" && $tag == notary-state-ci-100 ]] || exit 94
+    jq -n --arg sha "$target" --arg tag "$tag" '{id:1,tag_name:$tag,target_commitish:$sha,draft:true,prerelease:true,assets:[]}' > "$remote/release.json"
+    [[ ${TEST_RAW_CREATE_FAIL:-false} != true ]] || { printf 'gh: Resource not accessible by integration (HTTP 403)\n' >&2; exit 44; }
+    if [[ ${TEST_BAD_CREATE_JSON:-false} == true ]]; then printf '{';
+    else jq "${TEST_CREATE_MUTATION:-.}" "$remote/release.json"; fi ;;
+  POST:https://uploads.github.com/repos/fixture/repo/releases/1/assets\?name=*)
+    name=${endpoint##*=}
+    [[ ! -e $remote/$name ]] || exit 93
+    cp "$input" "$remote/$name"
+    printf 'upload %s\n' "$name" >> "$TEST_CUSTODY/writes"
+    jq --arg name "$name" --argjson size "$(wc -c < "$input" | tr -d ' ')" \
+      '.assets += [{id:(([.assets[].id,9] | max) + 1),name:$name,state:"uploaded",size:$size}]' "$remote/release.json" > "$remote/next.json"
+    mv "$remote/next.json" "$remote/release.json"
+    jq ".assets[-1] | ${TEST_UPLOAD_MUTATION:-.}" "$remote/release.json" ;;
+  GET:repos/fixture/repo/releases/assets/*)
+    id=${endpoint##*/}
+    printf 'download %s\n' "$id" >> "$TEST_CUSTODY/reads"
+    name=$(jq -er --argjson id "$id" '.assets[] | select(.id == $id) | .name' "$remote/release.json")
+    cat "$remote/$name" ;;
+  GET:repos/fixture/repo/releases/1)
+    printf 'get 1\n' >> "$TEST_CUSTODY/reads"
+    if [[ ${TEST_REBIND_ASSET:-false} == true ]] && jq -e '.assets | length >= 2' "$remote/release.json" >/dev/null; then
+      jq '.assets[0].id = 999' "$remote/release.json"
+    else jq "${TEST_GET_MUTATION:-.}" "$remote/release.json"; fi ;;
+  *) printf 'Unexpected fixture gh: %s %s\n' "$method" "$endpoint" >&2; exit 90 ;;
+esac
 STUB
 chmod +x "$work/bin/gh"
 fail() { printf 'durable custody test failed: %s\n' "$*" >&2; exit 1; }
@@ -47,7 +80,14 @@ jq -n --arg sha "$BUILD_SHA" --arg digest "$(sha "$work/source/$app")" --arg app
 (cd "$work/source" && shasum -a 256 "$app" "$dmg") > "$work/source/SHA256SUMS"
 jq -nS --arg sha "$BUILD_SHA" --arg digest "$(sha "$work/source/$app")" \
   '{schema:2,commit:$sha,run_id:"100",version:"1.2.3",build_number:"7",architecture:"universal",original_archive_sha256:$digest}' > "$work/state/origin.json"
-run save-source "$work/source" || { cat "$work/result.log"; fail 'initial source custody'; }
+export TEST_OMIT_DRAFT=true
+run save-source "$work/source" || { cat "$work/result.log"; fail 'create succeeds while LIST omits the draft'; }
+[[ $(grep -c '^list$' "$work/reads") == 1 ]] || fail 'Creation depended on rediscovery through LIST'
+[[ $(cat "$GITHUB_ENV") == NW_CUSTODY_RELEASE_ID=1 ]] || fail 'Verified source did not export its release pointer'
+export NW_CUSTODY_RELEASE_ID=1
+run save "$work/state" 00 || { cat "$work/result.log"; fail 'next step uses verified exact ID despite omitted LIST'; }
+[[ $(grep -c '^list$' "$work/reads") == 1 ]] || fail 'Cached pointer used LIST'
+unset TEST_OMIT_DRAFT NW_CUSTODY_RELEASE_ID
 run restore-source "$work/source-restored" || { cat "$work/result.log"; fail 'source restore'; }
 diff -qr "$work/source" "$work/source-restored" >/dev/null || fail 'source bytes changed'
 export BUILD_ATTEMPT=2
@@ -143,6 +183,61 @@ reject save-final "$work/final"
 printf changed >> "$work/remote/final.tar"
 reject restore-final "$work/final-corrupt"
 [[ ! -e $work/final-corrupt ]] || fail 'failed final restoration exposed a partial candidate'
+# Cached pointers are never authority and never fall back to CREATE.
+writes=$(wc -l < "$work/writes")
+for pointer in 2 bad; do
+  export NW_CUSTODY_RELEASE_ID=$pointer
+  reject save-source "$work/source"
+done
+export NW_CUSTODY_RELEASE_ID=1
+for mutation in '.id=2' '.target_commitish="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' '.tag_name="other"' '.draft=false' '.prerelease=false' '.assets[0].state="starter"'; do
+  export TEST_GET_MUTATION=$mutation
+  reject restore-source "$work/invalid-pointer-binding"
+done
+unset TEST_GET_MUTATION NW_CUSTODY_RELEASE_ID
+[[ $(wc -l < "$work/writes") == "$writes" ]] || fail 'Invalid pointers caused writes'
+export TEST_BAD_INVENTORY=true
+reject save-source "$work/source"
+[[ $(wc -l < "$work/writes") == "$writes" ]] || fail 'Malformed inventory caused writes'
+unset TEST_BAD_INVENTORY
+# Isolate create failures from retained valid custody.
+mv "$work/remote" "$work/saved-remote"
+cp "$GITHUB_ENV" "$work/verified-env"
+for mutation in '.id=0' '.id=2' '.id=1.5' '.id="1"' '.target_commitish="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' '.tag_name="other"' '.draft=false' '.prerelease=false'; do
+  mkdir "$work/remote"
+  : > "$work/writes"
+  export TEST_CREATE_MUTATION=$mutation
+  reject save-source "$work/source"
+  [[ $(cat "$work/writes") == create ]] || fail 'Invalid create identity caused uploads or duplicate POST'
+  rm -rf "$work/remote"
+done
+unset TEST_CREATE_MUTATION
+for fault in TEST_RAW_CREATE_FAIL TEST_BAD_CREATE_JSON; do
+  mkdir "$work/remote"
+  : > "$work/writes"
+  export "${fault}=true"
+  reject save-source "$work/source"
+  [[ $(cat "$work/writes") == create ]] || fail 'Failed create was retried'
+  if [[ $fault == TEST_RAW_CREATE_FAIL ]]; then
+    grep -F 'Resource not accessible by integration (HTTP 403)' "$work/result.log" >/dev/null || fail 'Provider rejection was hidden'
+  fi
+  unset "$fault"
+  rm -rf "$work/remote"
+done
+for mutation in '.id=999' '.id=0' '.name="wrong"' '.state="starter"' '.size=0'; do
+  mkdir "$work/remote"
+  export TEST_UPLOAD_MUTATION=$mutation
+  reject save-source "$work/source"
+  rm -rf "$work/remote"
+done
+unset TEST_UPLOAD_MUTATION
+mkdir "$work/remote"
+export TEST_REBIND_ASSET=true
+reject save-source "$work/source"
+unset TEST_REBIND_ASSET
+rm -rf "$work/remote"
+cmp -s "$work/verified-env" "$GITHUB_ENV" || fail 'Unverified custody exported a pointer'
+mv "$work/saved-remote" "$work/remote"
 export TEST_NETWORK_FAIL=true
 reject save "$work/state" 05
 reject restore-source "$work/network"

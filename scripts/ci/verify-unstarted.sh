@@ -1,5 +1,5 @@
 #!/bin/bash
-# Read-only proof across the complete retained candidate lineage. A later empty
+# Read-only pre-signing proof across the complete retained candidate lineage. A later empty
 # run cannot erase an earlier signing/upload attempt or substitute for receipts.
 set -euo pipefail
 # shellcheck source=scripts/lib/macos.sh
@@ -25,6 +25,6 @@ while IFS=$'\t' read -r id number; do
      and .display_title == ("Notary Watch distribution from CI " + $build)' \
     "$work/run.json" >/dev/null || nw_fail 'Execution provenance does not prove a failed unstarted candidate.'
   gh api --paginate "repos/$repo/actions/runs/$id/attempts/1/jobs?per_page=100" --jq '.jobs[]' | jq -s '.' > "$work/jobs.json"
-  jq -e -f "$NW_ROOT/scripts/lib/unstarted-jobs.jq" "$work/jobs.json" >/dev/null || nw_fail 'A prior job may have executed; preserve its checkpoint and submission reservation.'
+  jq -e -f "$NW_ROOT/scripts/lib/unstarted-jobs.jq" "$work/jobs.json" >/dev/null || nw_fail 'A prior signing operation may have executed; preserve its checkpoint and submission reservation.'
 done < <(jq -r '.[] | [.id,.run_number] | @tsv' "$runs")
-printf 'Verified all retained candidate executions had no runner, steps or signing.\n'
+printf 'Verified every retained candidate execution stopped before credential-bearing signing.\n'

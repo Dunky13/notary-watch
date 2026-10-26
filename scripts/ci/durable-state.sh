@@ -5,6 +5,8 @@ umask 077
 export LC_ALL=C
 # shellcheck source=scripts/lib/macos.sh
 source "$(dirname -- "$0")/../lib/macos.sh"
+# shellcheck source=scripts/lib/github-release.sh
+source "$(dirname -- "$0")/../lib/github-release.sh"
 [[ $# -ge 2 ]] || nw_fail 'Usage: durable-state.sh save directory slot | restore distribution-run slot new-directory | save-source|save-final directory | restore-source|restore-final new-directory'
 operation=$1
 shift
@@ -123,28 +125,34 @@ validate_directory() {
   fi
 }
 lookup_release() {
+  if [[ -n ${NW_CUSTODY_RELEASE_ID:-} ]]; then
+    release_id=$NW_CUSTODY_RELEASE_ID
+    nw_gh_release_get "$repo" "$release_id" "$work/release.json"
+    return 0
+  fi
   gh api --paginate "repos/$repo/releases?per_page=100" --jq '.[]' > "$work/releases.json" || nw_fail 'Could not inventory durable candidate drafts.'
-  jq -s --arg tag "$tag" '[.[] | select(.tag_name == $tag)]' "$work/releases.json" > "$work/matches.json"
+  jq -se 'all(.[]; type == "object" and (.tag_name | type == "string") and
+    (.draft | type == "boolean") and (.prerelease | type == "boolean"))' "$work/releases.json" >/dev/null || nw_fail 'Durable release inventory is malformed.'
+  jq -s --arg tag "$tag" '[.[] | select(.tag_name == $tag)]' "$work/releases.json" > "$work/matches.json" || nw_fail 'Durable release inventory is malformed.'
   [[ $(jq length "$work/matches.json") -le 1 ]] || nw_fail 'Ambiguous durable candidate draft.'
   jq '.[0]' "$work/matches.json" > "$work/release.json"
-  [[ $(jq type "$work/release.json") == '"object"' ]]
+  [[ $(jq type "$work/release.json") == '"object"' ]] || return 1
+  release_id=$(nw_gh_release_id "$work/release.json")
+  nw_gh_release_get "$repo" "$release_id" "$work/release.json"
 }
 validate_release() {
   jq -e --arg sha "$BUILD_SHA" --arg tag "$tag" \
     '.tag_name == $tag and .target_commitish == $sha and .draft == true and .prerelease == true and
-     (.id | type == "number" and . > 0) and (.assets | type == "array")' \
+     (.assets | type == "array") and ([.assets[].id] | length == (unique | length))' \
     "$work/release.json" >/dev/null || nw_fail 'Durable draft was published or belongs to another source candidate.'
 }
 asset_id() {
-  local asset=$1
-  jq -er --arg name "$asset" \
-    '[.assets[] | select(.name == $name)] | if length == 0 then empty elif length == 1 and (.[0].id | type == "number" and . > 0) then .[0].id else error("Ambiguous durable asset") end' \
-    "$work/release.json"
+  nw_gh_asset_id "$work/release.json" "$1"
 }
 download_asset() {
   local asset=$1 destination=$2 id
   id=$(asset_id "$asset") || nw_fail "Missing or ambiguous durable asset: $asset"
-  gh api -H 'Accept: application/octet-stream' "repos/$repo/releases/assets/$id" > "$destination" || nw_fail 'Could not download exact durable asset ID.'
+  nw_gh_asset_download "$repo" "$id" "$destination"
 }
 if [[ $operation == save || $operation == save-source || $operation == save-final ]]; then
   validate_directory "$input"
@@ -161,28 +169,37 @@ if [[ $operation == save || $operation == save-source || $operation == save-fina
   printf '%s  %s\n' "$digest" "$name" > "$work/$name.sha256"
   if ! lookup_release; then
     printf 'Private recovery custody for original CI %s, source %s. Never publish this draft.\n' "$BUILD_RUN_ID" "$BUILD_SHA" > "$work/notes.txt"
-    gh release create "$tag" --repo "$repo" --target "$BUILD_SHA" --draft --prerelease \
-      --title "Notary Watch recovery CI $BUILD_RUN_ID" --notes-file "$work/notes.txt"
-    lookup_release || nw_fail 'Created durable candidate draft is unavailable.'
+    nw_gh_release_create "$repo" "$tag" "$BUILD_SHA" true "Notary Watch recovery CI $BUILD_RUN_ID" "$work/notes.txt" "$work/release.json"
+    release_id=$(nw_gh_release_id "$work/release.json")
+    validate_release
+    nw_gh_release_get "$repo" "$release_id" "$work/release.json"
   fi
   validate_release
+  : > "$work/asset-ids"
   for asset in "$name" "$name.sha256"; do
+    nw_gh_release_get "$repo" "$release_id" "$work/release.json"
+    validate_release
     count=$(jq --arg name "$asset" '[.assets[] | select(.name == $name)] | length' "$work/release.json")
     if [[ $count == 0 ]]; then
-      gh release upload "$tag" "$work/$asset" --repo "$repo" || nw_fail 'Durable immutable upload failed.'
+      id=$(nw_gh_asset_upload "$repo" "$release_id" "$work/$asset" "$work/upload.json")
     elif [[ $count == 1 ]]; then
       download_asset "$asset" "$work/existing"
       cmp -s "$work/$asset" "$work/existing" || nw_fail 'Existing durable bytes differ; refusing overwrite.'
+      id=$(asset_id "$asset")
     else
       nw_fail 'Duplicate immutable custody asset names.'
     fi
+    printf '%s %s\n' "$id" "$asset" >> "$work/asset-ids"
   done
-  lookup_release || nw_fail 'Durable draft disappeared after upload.'
+  nw_gh_release_get "$repo" "$release_id" "$work/release.json"
   validate_release
-  for asset in "$name" "$name.sha256"; do
+  while read -r id asset; do
+    [[ $(asset_id "$asset") == "$id" ]] || nw_fail 'Durable asset ID changed after upload.'
     download_asset "$asset" "$work/verified"
     cmp -s "$work/$asset" "$work/verified" || nw_fail 'Durable upload verification failed.'
-  done
+  done < "$work/asset-ids"
+  # A pointer for subsequent steps only; every use requires a fresh bound GET.
+  if [[ -n ${GITHUB_ENV:-} ]]; then printf 'NW_CUSTODY_RELEASE_ID=%s\n' "$release_id" >> "$GITHUB_ENV"; fi
   printf 'Verified durable custody: %s, %s, SHA256 %s.\n' "$tag" "$name" "$digest"
 else
   [[ ! -e $output && ! -L $output ]] || nw_fail 'Restore destination must not exist.'

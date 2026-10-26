@@ -7,6 +7,8 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/notary-watch-restore-tests.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/state" "$work/bin"
 export GH_REPO=fixture/repo BUILD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa BUILD_RUN_ID=100 TEST_RESTORE_ROOT="$work" PATH="$work/bin:$PATH"
+unset NW_CUSTODY_RELEASE_ID
+export GITHUB_ENV="$work/github-env"
 name=Notary-Watch-App-9.8.7-build.7-100-universal.zip
 printf 'Retained synthetic signed upload bytes\n' > "$work/state/$name"
 digest=$(shasum -a 256 "$work/state/$name" | awk '{print $1}')
@@ -21,8 +23,13 @@ cat > "$work/bin/gh" <<'STUB'
 #!/bin/bash
 set -euo pipefail
 [[ $1 == api ]] || exit 90
+release() {
+  jq -n --arg sha "$BUILD_SHA" --argjson archive_size "$(wc -c < "$TEST_RESTORE_ROOT/state-r200-s20.tar" | tr -d ' ')" \
+    --argjson checksum_size "$(wc -c < "$TEST_RESTORE_ROOT/state-r200-s20.tar.sha256" | tr -d ' ')" \
+    '{id:10,tag_name:"notary-state-ci-100",draft:true,prerelease:true,target_commitish:$sha,assets:[{id:111,name:"state-r200-s20.tar",state:"uploaded",size:$archive_size},{id:112,name:"state-r200-s20.tar.sha256",state:"uploaded",size:$checksum_size}]}'
+}
 case $* in
-  *'/releases?'*) jq -n --arg sha "$BUILD_SHA" '{id:10,tag_name:"notary-state-ci-100",draft:true,prerelease:true,target_commitish:$sha,assets:[{id:111,name:"state-r200-s20.tar"},{id:112,name:"state-r200-s20.tar.sha256"}]}' ;;
+  *'/releases?'*|*'/releases/10') release ;;
   *'/releases/assets/111') cat "$TEST_RESTORE_ROOT/state-r200-s20.tar" ;;
   *'/releases/assets/112') cat "$TEST_RESTORE_ROOT/state-r200-s20.tar.sha256" ;;
   *) exit 91 ;;

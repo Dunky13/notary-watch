@@ -92,7 +92,11 @@ if [[ -n ${RESUME_RUN_ID:-} ]]; then
     '(.event == "workflow_dispatch" or .event == "workflow_run") and .status == "completed" and .run_attempt == 1 and .display_title == ("Notary Watch distribution from CI " + $build)' \
     "$work/run.json" >/dev/null || nw_fail 'Recovery must come from the completed automatic or manual distribution run for this candidate.'
   load_durable
-  if [[ $durable == false ]] && "$NW_ROOT/scripts/ci/verify-unstarted.sh" "$work/prior-runs.json" "$GITHUB_REPOSITORY" "$BUILD_RUN_ID" > "$work/unstarted-proof.log" 2>&1; then
+  safe_initial_custody=false
+  # A recovery run's s00 can already contain older submission UUIDs. Restore
+  # any state checkpoint rather than treating its slot as proof of emptiness.
+  if [[ $durable == false ]] || jq -e '.[0].prerelease == true and (.[0].assets | all(.[]; .name | test("^source\\.tar(\\.sha256)?$")))' "$work/durable.json" >/dev/null; then safe_initial_custody=true; fi
+  if [[ $safe_initial_custody == true ]] && "$NW_ROOT/scripts/ci/verify-unstarted.sh" "$work/prior-runs.json" "$GITHUB_REPOSITORY" "$BUILD_RUN_ID" > "$work/unstarted-proof.log" 2>&1; then
     bootstrap_resume=true
   elif [[ $durable == true ]] && jq -e '.[0].assets | any(.[]; .name == "final.tar" or .name == "final.tar.sha256")' "$work/durable.json" >/dev/null; then
     jq -e '.[0].assets | ([.[] | select(.name == "final.tar")] | length == 1) and ([.[] | select(.name == "final.tar.sha256")] | length == 1)' "$work/durable.json" >/dev/null || nw_fail 'Final candidate custody is incomplete; do not regenerate different download bytes.'
