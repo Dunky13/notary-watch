@@ -13,9 +13,13 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 # Inspect only policy and names; never print credential values or raw parser errors.
 gh api "repos/$repo/environments/apple-signing" > "$work/environment.json"
-jq -e '.deployment_branch_policy.custom_branch_policies == true and
-  any(.protection_rules[]; .type == "required_reviewers" and (.reviewers | length > 0))' \
-  "$work/environment.json" >/dev/null || nw_fail 'Configure required reviewers and branch restrictions before installing signing secrets.'
+jq -e '.deployment_branch_policy.custom_branch_policies == true and .deployment_branch_policy.protected_branches == false' \
+  "$work/environment.json" >/dev/null || nw_fail 'Configure selected-main branch restrictions before installing signing secrets.'
+gh api "repos/$repo/environments/apple-signing/deployment-branch-policies" > "$work/branches.json"
+jq -e '.branch_policies | length == 1 and .[0].name == "main" and .[0].type == "branch"' "$work/branches.json" >/dev/null || nw_fail 'Signing secrets require the exact main-only deployment policy.'
+gh api "repos/$repo/branches/main/protection" > "$work/protection.json"
+jq -e '.enforce_admins.enabled == true and .required_status_checks.strict == true and
+  (.required_status_checks.contexts | index("ci-required") != null)' "$work/protection.json" >/dev/null || nw_fail 'Protected main must enforce the required fresh CI gate.'
 jq -e 'type == "object" and
   (keys | sort) == (["APPLE_DEVELOPER_ID_P12_BASE64","APPLE_DEVELOPER_ID_P12_PASSWORD","APPLE_NOTARY_KEY_P8","APPLE_NOTARY_KEY_ID","APPLE_NOTARY_ISSUER_ID"] | sort) and
   all(.[]; type == "string" and length > 0) and

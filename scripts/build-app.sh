@@ -41,6 +41,10 @@ else
   cp "$binary_dir/NotaryWatch" "$app/Contents/MacOS/NotaryWatch"
 fi
 cp Resources/Info.plist "$app/Contents/Info.plist"
+if [[ -n ${RELEASE_VERSION:-} ]]; then
+  nw_validate_version "$RELEASE_VERSION"
+  plutil -replace CFBundleShortVersionString -string "$RELEASE_VERSION" "$app/Contents/Info.plist"
+fi
 if [[ -n ${BUILD_NUMBER:-} ]]; then
   [[ $BUILD_NUMBER =~ ^[0-9]+$ ]] || nw_fail 'BUILD_NUMBER must contain digits.'
   plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$app/Contents/Info.plist"

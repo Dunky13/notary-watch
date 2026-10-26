@@ -13,6 +13,9 @@ metadata="$input/build-metadata.json"
 jq -e --arg sha "$BUILD_SHA" --arg run "$BUILD_RUN_ID" --arg build "$BUILD_NUMBER" \
   '.schema == 1 and .commit == $sha and .run_id == $run and .build_number == $build and .architecture == "universal"' "$metadata" >/dev/null || nw_fail 'Build metadata differs from the pinned successful main CI run.'
 version=$(jq -er '.version' "$metadata")
+if [[ -n ${BUILD_ATTEMPT:-} ]]; then
+  [[ $BUILD_ATTEMPT =~ ^[1-9][0-9]*$ && $(jq -r '.run_attempt' "$metadata") == "$BUILD_ATTEMPT" ]] || nw_fail 'Original CI artifact attempt changed.'
+fi
 nw_validate_version "$version"
 archive="Notary-Watch-App-$version-universal-development.zip"
 [[ $(jq -r '.archive' "$metadata") == "$archive" && -f $input/$archive ]] || nw_fail 'Unexpected original app archive.'

@@ -75,7 +75,12 @@ for asset in "${assets[@]}"; do
   [[ -f $work/download/$asset && $(nw_sha "$work/download/$asset") == "$(nw_sha "$directory/$asset")" ]] || nw_fail "Uploaded asset differs from the accepted candidate: $asset"
 done
 if [[ $draft == true ]]; then
-  gh release edit "$tag" --repo "$GH_REPO" --draft=false --prerelease=false --latest
+  # A delayed older candidate may complete after a newer one. Publish its
+  # immutable version without moving the consumer's latest pointer backwards.
+  latest=true
+  if jq -se --arg version "$version" '[.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
+    | .tag_name[1:] | split(".") | map(tonumber)] | any(.[]; . > ($version | split(".") | map(tonumber)))' "$work/releases.json" >/dev/null; then latest=false; fi
+  gh release edit "$tag" --repo "$GH_REPO" --draft=false --prerelease=false --latest="$latest"
 fi
 lookup_release || nw_fail 'Published release is unavailable.'
 jq -e '.draft == false and .prerelease == false' "$work/release.json" >/dev/null || nw_fail 'Release is not publicly stable.'

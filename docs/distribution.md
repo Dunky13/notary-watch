@@ -4,25 +4,19 @@ Notary Watch targets macOS 14 and later. The distribution build contains Apple S
 
 ## Production entry point
 
-A successful main-push **CI** run automatically queues **Distribution** for that exact source run. The signing job waits for human approval of **apple-signing**. PR CI, manually dispatched CI, and unsuccessful CI cannot start signing. Automatic candidates retain their verified downloads as workflow artifacts; public publication is still an explicit manual choice.
+A successful same-repository main-push **CI** run automatically starts **Distribution**, which publishes a stable release only after both native acceptance jobs pass. PR CI, manual CI, foreign repositories and unsuccessful CI cannot supply release artifacts. The required branch-protection context is `ci-required`, with strict freshness and administrator enforcement.
 
-After the automatic Distribution run completes, publish its verified candidate with a new manual recovery dispatch from a clean main checkout:
+The standing release authority permits trusted protected-main automation to use the existing isolated Apple secrets and publish complete verified candidates. Only the recurring reviewer rules on **apple-signing** and **production-release** are removed. Both environments retain their exact selected-main branch restriction. There is no routine signing, deployment, version-entry or publication approval.
 
-```sh
-./scripts/ci/start-release.sh --resume PREVIOUS_DISTRIBUTION_RUN_ID --publish
-```
+CI derives the stable version before compilation: the configured major/minor in `Resources/Info.plist` plus the original CI workflow run number as its patch (for example `1.2.7` for CI build 7). The bundle build number remains that original run number. Each successful main push is eligible, including release automation changes. No nightly channel or updater is introduced. The existing `dev.notarywatch.local` bundle identity, Developer ID team, user Keychain profiles and preferences remain authoritative. There is no Sparkle feed, Homebrew integration or separate update-signing key in this repository.
 
-Replace `PREVIOUS_DISTRIBUTION_RUN_ID` with the latest completed automatic or manual Distribution run ID for that build. To recover a failed candidate without requesting publication, omit `--publish`. If the original source is older than current main, also pass `--build-run-id ORIGINAL_CI_RUN_ID`.
-
-Only when no Distribution run has ever existed for a successful CI build, use the helper without `--resume` to start its first candidate:
+Recovery uses the same original CI run and version. For exceptional operator recovery, from a clean current main checkout:
 
 ```sh
-./scripts/ci/start-release.sh
+./scripts/ci/start-release.sh --build-run-id ORIGINAL_CI_RUN_ID --resume LATEST_DISTRIBUTION_RUN_ID
 ```
 
-The automatic candidate retains signed downloads as workflow artifacts. A manual recovery with `--publish` publishes `v<app version>` only after Developer ID signing, both Apple notarization stages, stapling, Gatekeeper, fresh Apple Silicon and Intel acceptance, and approval of the **production-release** environment. The **apple-signing** environment separately approves credential use. Both environments are restricted to main and require a human reviewer. A production build uses Swift release optimization and contains both native architectures; CI first packages it with a development signature before the protected job replaces that signature.
-
-The helper selects a successful main-push CI run for the exact clean current main commit and refuses duplicate distribution attempts. `--build-run-id` explicitly selects another retained successful main CI run, including when recovering after main advances. The workflow independently verifies the CI completion event, repository, branch, source SHA, archive checksum, bundle metadata, build number and actual architecture slices before loading credentials. The event source commit must match the selected successful CI run, and immutable artifact IDs remain pinned.
+This enters the same automatic stable publication path. `--publish` remains an optional compatibility spelling and has no separate effect. The workflow refuses duplicate fresh candidates and reruns. Manual dispatch requires the exact successful main-push source and latest completed recovery run; it cannot authorize PR artifacts.
 
 ## Local drag-and-drop installer
 
@@ -61,7 +55,7 @@ The package is built before signing credentials are loaded. Distribution signs t
 
 ## Configure Apple signing
 
-In GitHub, open **Settings → Environments**, create **apple-signing**, restrict deployment to **main**, and configure required reviewers. Reviewers authorize use of signing credentials independently of workflow conditions. Protect main and make `ci-required` a required check.
+In GitHub, open **Settings → Environments**, create **apple-signing**, restrict deployment to the **main branch only**, with no tag rule. Under the standing automatic-release authority, do not configure recurring reviewers on apple-signing or production-release. Protect main and require fresh `ci-required` checks with administrator enforcement. Keep credentials scoped to apple-signing.
 
 Add these environment secrets. Their values must never be committed:
 
@@ -95,15 +89,13 @@ The signing wrapper is restricted to isolated GitHub-hosted runners. It imports 
 
 ## Run distribution
 
-Normal main-push CI completion queues a candidate automatically. Use a manual dispatch for recovery or explicit publication. Wait for a successful **main-push** CI run. In **Actions → Distribution → Run workflow**, choose main and enter its CI run ID. Set **resume_run_id** to the latest completed Distribution run for that build. Leave it blank only when no Distribution run has ever existed for the build. Leave **publish_release** unchecked to retain verified signed downloads as workflow artifacts for review.
-
-The equivalent GitHub CLI command, run from the repository root, is:
+Normal main-push CI completion queues the entire stable release automatically. A manual dispatch is an exceptional recovery entry point, not a routine release step:
 
 ```sh
-gh workflow run distribution.yml --ref main -f build_run_id=123456789 -f resume_run_id=987654321 -F publish_release=false
+gh workflow run distribution.yml --ref main -f build_run_id=123456789 -f resume_run_id=987654321
 ```
 
-Replace the example CI and recovery run IDs with the actual runs. The workflow refuses PR runs, runs from another repository, unsuccessful CI, and missing or expired artifacts.
+Replace both example IDs with actual evidence. The workflow checks original source, CI attempt and exact artifacts before credentials. It never rebuilds during signing or recovery.
 
 The protected signing job:
 
@@ -117,33 +109,23 @@ The protected signing job:
 
 Version and build numbers in submission names come from the original app's metadata; the CI run ID also distinguishes candidates. The product, version, build, architecture, and app/installer stage stay visible in Apple history. Submission archives do not use generic names such as `installer.zip` or `submit.zip`.
 
-An initial credential-free checkpoint permits recovery from import failures. Checkpoints then retain exact signed archives, bound receipts, and validated allowlisted Apple diagnostic fields after each stage, separately from final downloads. Raw client output, working directories and credential scratch files are never uploaded. A receipt lock prevents concurrent use; each receipt binds the UUID to source commit, version/build, architecture, stage, original CI run, filename and submitted SHA-256. Accepted logs must match the ID, status and any filename/hash fields Apple returns. Error diagnostics, malformed evidence or missing logs block promotion. They do not contain private keys, exported identities, or the temporary signing Keychain. The final signed artifact is named `Notary-Watch-signed-<distribution run ID>-a<attempt>`.
+An initial credential-free checkpoint permits recovery from import failures. Safe checkpoints contain exact signed archives, source/run/version-bound receipts and allowlisted diagnostics. Raw client output, working directories, credentials and Keychains are excluded. Accepted diagnostics must match the UUID/status and any filename/hash returned by Apple. A successful mock does not establish Apple acceptance.
 
-## Resume without duplicate submissions
+## Durable custody and automatic continuation
 
-A finite wait timeout does not cancel Apple's request. To resume, dispatch **Distribution** with the same **build_run_id** and set **resume_run_id** to the previous distribution run that retained its checkpoint:
+The private draft `notary-state-ci-<original CI run>` retains the original credential-free build (`source.tar`), each stage snapshot, pre-upload intent, immediate UUID receipt, and the exact final downloads (`final.tar`). Every archive has its own checksum companion, downloads use exact asset IDs, and existing bytes are compared instead of overwritten. The draft is bound to the original source and is never published. Ordinary workflow artifacts remain a convenient 30-day copy; durable custody has no automatic artifact expiration. Do not delete recovery drafts for active or published candidates without a separate retention decision.
 
-```sh
-gh workflow run distribution.yml --ref main -f build_run_id=123456789 -f resume_run_id=987654321 -F publish_release=false
-```
+The controller runs after Distribution completion and every fifteen minutes. It considers only the latest completed failed/timed-out attempt of each candidate, validates its successful same-repository main-push CI, and permits at most twelve distribution attempts. Only a bound UUID with a current-execution pending/diagnosed-transport classification can automatically resume Apple observation. Finalized downloads can resume fresh acceptance/publication without signing or repacking. Terminal rejection, contradictory/malformed evidence, missing UUIDs, ambiguous custody and exhausted attempts require operator investigation. Cancellation is not automatically undone.
 
-The helper supports the same recovery:
+Checkpoints are selected by attempted stage and execution lineage, never opaque artifact-ID magnitude. Stage completion snapshots take precedence; if a runner dies during a submit/wait stage, only the matching inline intent/UUID snapshot from that same distribution attempt may substitute. An intent is durably verified before upload begins. UUID custody is verified immediately after capture. If upload completes but the UUID never reaches durable storage, recovery retains the intent and refuses another upload; reconcile Apple history before proceeding. There is no claim of atomicity between Apple and GitHub.
 
-```sh
-./scripts/ci/start-release.sh --build-run-id 123456789 --resume 987654321
-```
-
-Add `--publish` only if publication is intended. A new dispatch for a previously attempted build without an explicit recovery run is refused. Workflow reruns are refused; use a new manual dispatch with recovery instead. Recovery must use the latest earlier distribution attempt for that candidate, so an older snapshot cannot hide a newer submission. Missing or expired state on that latest attempt requires reconciliation. The workflow validates the previous run's repository, main branch, workflow, and build-specific checkpoint name. It selects the checkpoint for the latest attempted signing/notarization stage using the stage label, rather than the artifact ID. GitHub artifact IDs are not chronological. If that stage's checkpoint is missing or expired, recovery fails instead of restoring an older snapshot that could omit a submission ID. It restores the exact signed archives and checks the original build identity. Recorded submissions are queried again, never uploaded again. A stapling or ticket-service failure can be retried against the same accepted bytes. A newer build does not interrupt an active distribution run for another build.
-
-**Use a new manual dispatch with resume_run_id after a failure.** A plain “Re-run failed jobs” does not automatically restore a checkpoint from an earlier run attempt. Download and retain diagnostics before the 30-day artifact expiration.
-
-If upload intent exists but no valid Apple ID was recovered, the operation fails and refuses another submission. Reconcile the request in Apple history before any new upload. Complete runner loss before a checkpoint upload can also require manual reconciliation; checkpointing cannot guarantee recovery of an ID that never reached durable storage.
+A finite wait does not cancel Apple's request. Continuation queries the retained UUID and original signed bytes. It cannot create a fresh upload just because a client timed out. New dispatches independently recheck latest-run ordering under the original-build concurrency lock. Missing latest-stage custody fails closed, rather than restoring an older attempt. The original CI attempt is also checked after ordinary artifacts expire.
 
 DMG creation retries at most three times and only when the complete error is exactly `hdiutil: create failed - Resource busy`. Stapling retries at most three times for ticket-service errors 65 or 68. Other errors fail immediately. Each notary wait is bounded, and the outer signing job has a 90-minute limit. None of these limits promises Apple's turnaround time.
 
 ## Stable production publication
 
-Set **publish_release** to true only when publication is intended. After both fresh acceptance jobs pass, approve the **production-release** environment. The workflow creates a draft `v<app version>` release at the exact accepted source commit, uploads only the ZIP, DMG, manifest and checksums, downloads every uploaded asset and compares its digest, then makes the complete release stable and latest. It verifies the published tag resolves to the accepted source commit. A version already used for another commit or candidate fails; bump `CFBundleShortVersionString` for a new public version. A retry may fill missing draft assets but never overwrite them or mutate published release assets.
+After both fresh native acceptance jobs pass, the main-only production-release job creates a draft `v<version>` at the exact accepted source, uploads only the ZIP, DMG, manifest and checksums, downloads every asset and compares its digest, then publishes the complete stable release. A delayed older candidate cannot move the latest pointer backwards. Existing assets are never overwritten; a retry may only fill missing draft assets. The published tag must resolve to the accepted source commit. Durable final custody lets recovery reuse the same accepted download bytes.
 
 Final downloads have different hashes from submitted archives because stapling and repacking change bytes. The release manifest records submitted hashes; `SHA256SUMS` covers the final downloads. Final output is staged transactionally and previous complete output survives a packaging failure.
 
