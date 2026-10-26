@@ -51,7 +51,14 @@ cat > "$work/bin/gh" <<'STUB'
 #!/bin/bash
 set -euo pipefail
 if [[ $* == *'/workflows/distribution.yml/runs?'* ]]; then
-  printf '{"id":200,"status":"completed","display_title":"Notary Watch distribution from CI 100"}\n'
+  printf '{"id":200,"run_number":1,"status":"completed","display_title":"Notary Watch distribution from CI 100"}\n'
+elif [[ $* == *'/jobs?'* ]]; then
+  jq -n '{name:"Sign app and notarize named app ZIP and installer DMG",status:"completed",steps:[
+    {name:"Prepare a signed universal app without rebuilding it",status:"completed",conclusion:"success"},
+    {name:"Submit descriptive product-version-build-universal app ZIP",status:"completed",conclusion:"success"},
+    {name:"Require app acceptance, fetch its log, staple, and prepare the DMG",status:"completed",conclusion:"skipped"},
+    {name:"Submit descriptive product-version-build-universal installer DMG",status:"completed",conclusion:"skipped"},
+    {name:"Require DMG acceptance, staple, verify Finder copy, and finalize checksums",status:"completed",conclusion:"skipped"}]}'
 elif [[ $* == *'/artifacts?'* ]]; then
   if [[ $* == *'/runs/200/'* ]]; then
     printf '{"id":201,"expired":false,"name":"Notary-Watch-state-100-r200-a1-s10"}\n'
@@ -59,9 +66,9 @@ elif [[ $* == *'/artifacts?'* ]]; then
     printf '{"id":101,"expired":false,"name":"Notary-Watch-unsigned-100-a1"}\n'
   fi
 elif [[ $* == *'/runs/200'* ]]; then
-  printf '{"head_branch":"main","path":".github/workflows/distribution.yml","event":"workflow_dispatch","status":"completed","display_title":"Notary Watch distribution from CI 100","repository":{"full_name":"fixture/repo"},"head_repository":{"full_name":"fixture/repo"}}\n'
+  printf '{"head_branch":"main","path":".github/workflows/distribution.yml","event":"workflow_dispatch","run_attempt":1,"status":"completed","display_title":"Notary Watch distribution from CI 100","repository":{"full_name":"fixture/repo"},"head_repository":{"full_name":"fixture/repo"}}\n'
 else
-  printf '{"head_branch":"%s","path":".github/workflows/ci.yml","event":"%s","status":"completed","conclusion":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","run_number":7,"repository":{"full_name":"fixture/repo"},"head_repository":{"full_name":"fixture/repo"}}\n' "${TEST_SOURCE_BRANCH:-main}" "${TEST_SOURCE_EVENT:-push}"
+  printf '{"head_branch":"%s","path":".github/workflows/ci.yml","event":"%s","status":"completed","conclusion":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","run_number":7,"run_attempt":1,"repository":{"full_name":"fixture/repo"},"head_repository":{"full_name":"fixture/repo"}}\n' "${TEST_SOURCE_BRANCH:-main}" "${TEST_SOURCE_EVENT:-push}"
 fi
 STUB
 cat > "$work/bin/security" <<'STUB'
@@ -163,7 +170,7 @@ printf '0\n' > "$work/images"
 export TEST_IMAGE_MODE=mixed
 expect_failure nw_create_dmg "$work" "$work/test.dmg" Test
 [[ $(cat "$work/images") == 1 ]] || fail 'Mixed stderr was incorrectly treated as a transient Resource busy failure.'
-export GITHUB_REPOSITORY=fixture/repo GITHUB_RUN_ID=300 BUILD_RUN_ID=100 GITHUB_OUTPUT="$work/output" RESUME_RUN_ID=200
+export GITHUB_REPOSITORY=fixture/repo GITHUB_RUN_ID=300 GITHUB_RUN_NUMBER=2 GITHUB_RUN_ATTEMPT=1 BUILD_RUN_ID=100 GITHUB_OUTPUT="$work/output" RESUME_RUN_ID=200 GITHUB_EVENT_NAME=workflow_dispatch
 "$root/scripts/ci/resolve-build.sh"
 grep -Fx 'artifact_id=101' "$work/output" >/dev/null || fail 'Original artifact was not pinned.'
 grep -Fx 'recovery_artifact_id=201' "$work/output" >/dev/null || fail 'Recovery artifact was not pinned.'

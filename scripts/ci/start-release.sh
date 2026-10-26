@@ -33,7 +33,7 @@ else
   [[ $resume =~ ^[1-9][0-9]*$ ]] || nw_fail 'Recovery run ID is invalid.'
   jq -e --arg id "$resume" 'any(.[]; (.id | tostring) == $id and .status == "completed")' \
     "$work/distributions.json" >/dev/null || nw_fail 'Recovery run must be completed and belong to this build.'
-  [[ $(jq -r 'max_by(.id).id' "$work/distributions.json") == "$resume" ]] || nw_fail 'Recovery must use the latest distribution attempt; an older checkpoint can omit newer submissions.'
+  [[ $(jq -r 'max_by(.run_number).id' "$work/distributions.json") == "$resume" ]] || nw_fail 'Recovery must use the latest distribution attempt; an older checkpoint can omit newer submissions.'
 fi
 if [[ $publish == true ]]; then
   printf 'Requesting production publication after signing and release environment approvals.\n'
