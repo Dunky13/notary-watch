@@ -120,7 +120,7 @@ if [[ $operation == submit ]]; then
   mv "$prefix.intent.json.tmp" "$prefix.intent.json"
   persist_event intent
   result=0
-  xcrun notarytool submit "$archive" "${auth[@]}" --output-format json --no-progress \
+  nw_notarytool submit "$archive" "${auth[@]}" --output-format json --no-progress \
     > "$raw.submission.json" 2> "$raw.submit.stderr" || result=$?
   if submission=$(jq -er '.id | select(type == "string" and test("^[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$"))' "$raw.submission.json" 2>/dev/null); then
     jq -S --arg id "$submission" '. + {id:$id}' "$prefix.context.tmp" > "$prefix.submission.json.tmp"
@@ -147,7 +147,7 @@ case ${BASH_REMATCH[2]} in m) seconds=$((seconds * 60));; h) seconds=$((seconds 
 wait_attempts=$((wait_attempts + 1))
 disposition failed wait_started false
 wait_result=0
-xcrun notarytool wait "$submission" "${auth[@]}" --timeout "$notary_timeout" --output-format json --no-progress \
+nw_notarytool wait "$submission" "${auth[@]}" --timeout "$notary_timeout" --output-format json --no-progress \
   > "$raw.status.json" 2> "$raw.wait.stderr" || wait_result=$?
 status=$(jq -r '.status | select(. == "Accepted" or . == "Invalid" or . == "Rejected" or . == "In Progress")' "$raw.status.json" 2>/dev/null) || status=
 [[ -n $status ]] || status=Unknown
@@ -167,7 +167,7 @@ log_result=0
 case $status in
   Accepted|Invalid|Rejected)
     rm -f -- "$raw.log.json" "$prefix.log.json" "$prefix.log.json.tmp"
-    xcrun notarytool log "$submission" "${auth[@]}" "$raw.log.json" > "$raw.log.stdout" 2> "$raw.log.stderr" || log_result=$?
+    nw_notarytool log "$submission" "${auth[@]}" "$raw.log.json" > "$raw.log.stdout" 2> "$raw.log.stderr" || log_result=$?
     # Upload only documented diagnostic fields, never arbitrary client output.
     if [[ $log_result == 0 && -s $raw.log.json ]]; then
       jq -e -f "$NW_ROOT/scripts/lib/notary-log.jq" "$raw.log.json" > "$prefix.log.json.tmp" 2>/dev/null || nw_fail 'Apple returned malformed diagnostic evidence.'

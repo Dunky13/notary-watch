@@ -86,6 +86,9 @@ jobs:
       BUILD_RUN_ID: ${{ inputs.build_run_id || github.event.workflow_run.id }}
       BUILD_NUMBER: ${{ needs.source.outputs.run_number }}
       BUILD_ATTEMPT: ${{ needs.source.outputs.build_attempt }}
+      # Keep the qualified compiler unchanged; the older notary client traps
+      # before returning an upload UUID with the existing team API credentials.
+      APPLE_NOTARY_DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       GH_REPO: ${{ github.repository }}
       APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}

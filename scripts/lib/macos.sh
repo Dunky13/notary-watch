@@ -5,6 +5,13 @@ nw_fail() { printf 'Notary Watch: %s\n' "$*" >&2; exit 1; }
 nw_version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$NW_ROOT/Resources/Info.plist"; }
 nw_validate_version() { [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || nw_fail 'Version must be numeric x.y.z.'; }
 nw_sha() { shasum -a 256 "$1" | awk '{print $1}'; }
+nw_notarytool() {
+  if [[ -n ${APPLE_NOTARY_DEVELOPER_DIR:-} ]]; then
+    DEVELOPER_DIR="$APPLE_NOTARY_DEVELOPER_DIR" xcrun notarytool "$@"
+  else
+    xcrun notarytool "$@"
+  fi
+}
 nw_arch() {
   local architectures
   architectures=$(lipo -archs "$1") || nw_fail 'Could not inspect executable architectures.'

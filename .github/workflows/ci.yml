@@ -21,6 +21,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify the qualified Apple toolchain
+        env:
+          APPLE_NOTARY_DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
         run: scripts/ci/apple-toolchain.sh
       - name: Install workflow and shell checkers
         env:

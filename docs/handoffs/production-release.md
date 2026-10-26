@@ -31,3 +31,11 @@ The required local checks are `scripts/ci/check.sh`, including offline signing/c
 PR CI run 40352020268 passed both native test jobs and universal packaging but exposed an inherited-run-ID assumption in the inline custody fixture and an undeclared ripgrep dependency. Fixtures now set their execution identity explicitly, and the portable leak scan fails closed on scanner errors. The full shell check batch was reproduced with hosted run variables before the repair was pushed.
 
 Synthetic providers establish failure contracts only. Real Developer ID import, both Accepted UUIDs and logs, both staples, native acceptance, same-candidate continuation, published asset IDs/hashes and independent public downloads must be reported separately from source tests. Qualification evidence belongs in the release execution report; local HTML evidence reports stay outside Git. No provider success is inferred from these implementation notes.
+
+## First real hosted boundary
+
+Merged source `260884645ca2c94c259728638d673e9729a76493` passed main CI 40354420872 (build 9, version 1.2.9). Distribution 40354745932 automatically verified its exact artifact, established durable source custody and completed real isolated Developer ID signing. Xcode 16.4 notarytool then trapped with `Trace/BPT trap: 5` during app submit without returning a UUID. Its durable pre-upload intent and signed ZIP hash `eb69b9bcf527106cab4352fbf2e428e7f8ee16b8802e30814a8fe47ed0381684` survived. No Apple acceptance or publication is inferred.
+
+Two local history checks under the existing Notary Watch profile found no matching descriptive filename. The ambiguous candidate remains preserved and is retired, rather than uploaded again. An immutable, exact-execution retirement record stops future recovery without deleting the reservation. The temporary one-second qualification timeout was removed, restoring the original default-ten-minute policy.
+
+The repair pins only the notarization client to Xcode 26.3, whose installed availability and version are checked in credential-free CI and signing preflight. Build/acceptance remain on Xcode 16.4. The investigation's controlled older/newer client comparison and successful Hikyo uploads supply corroborating evidence; this repository still requires its own real newer-client, recovery and publication qualification.

@@ -19,7 +19,6 @@ while IFS= read -r candidate; do
   run=$(jq -er '.latest.id' "$work/candidate.json")
   [[ $run =~ ^[1-9][0-9]*$ ]] || nw_fail 'Invalid continuation run identity.'
   jq -e '.latest.status == "completed" and (.latest.conclusion == "failure" or .latest.conclusion == "timed_out")' "$work/candidate.json" >/dev/null || continue
-  if ((attempts >= 12)); then printf '::error::Candidate exhausted twelve automatic attempts: %s. Operator investigation required.\n' "$run"; blocked=true; continue; fi
   build=$(jq -er '.latest.display_title | capture("CI (?<id>[1-9][0-9]*)$").id' "$work/candidate.json")
   gh api "repos/$GH_REPO/actions/runs/$run" > "$work/run.json"
   jq -e --arg repo "$GH_REPO" ' .path == ".github/workflows/distribution.yml" and .head_branch == "main" and .run_attempt == 1
@@ -36,6 +35,17 @@ while IFS= read -r candidate; do
   # Legacy pre-adoption candidates have no durable automatic recovery authority.
   [[ $(jq length "$work/drafts.json") != 0 ]] || continue
   jq -e --arg sha "$BUILD_SHA" 'length == 1 and .[0].draft == true and .[0].prerelease == true and .[0].target_commitish == $sha' "$work/drafts.json" >/dev/null || nw_fail 'Invalid durable continuation custody.'
+  retired=$(jq '[.[0].assets[] | select(.name == "retired.json")] | length' "$work/drafts.json")
+  if [[ $retired != 0 ]]; then
+    retirement_id=$(jq -er '[.[0].assets[] | select(.name == "retired.json")] |
+      if length == 1 and (.[0].id | type == "number" and . > 0) then .[0].id else error("Ambiguous retirement asset") end' "$work/drafts.json") || nw_fail 'Retirement asset is ambiguous.'
+    gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$retirement_id" > "$work/retired.json"
+    jq -e --arg sha "$BUILD_SHA" --arg run "$BUILD_RUN_ID" --arg execution "$run" \
+      -f "$NW_ROOT/scripts/lib/retirement.jq" "$work/retired.json" >/dev/null || nw_fail 'Retirement does not bind this source and latest failed execution.'
+    printf 'Candidate CI %s is explicitly retired at distribution %s. No continuation.\n' "$build" "$run"
+    continue
+  fi
+  if ((attempts >= 12)); then printf '::error::Candidate exhausted twelve automatic attempts: %s. Operator investigation required.\n' "$run"; blocked=true; continue; fi
   if jq -e '.[0].assets | any(.[]; .name == "final.tar" or .name == "final.tar.sha256")' "$work/drafts.json" >/dev/null; then
     "$NW_ROOT/scripts/ci/durable-state.sh" restore-final "$work/final-$run"
   else
