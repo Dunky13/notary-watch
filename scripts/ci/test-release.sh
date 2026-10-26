@@ -84,7 +84,7 @@ esac
 STUB
 chmod +x "$work/bin/"*
 fail() { printf 'release test failed: %s\n' "$*" >&2; exit 1; }
-expect_failure() { if "$@" > "$work/failure.log" 2>&1; then fail "Unexpected success: $*"; fi; }
+expect_failure() { if ("$@") > "$work/failure.log" 2>&1; then fail "Unexpected success: $*"; fi; }
 archive="$work/Notary-Watch-App-9.8.7-universal.zip"
 printf 'immutable fixture\n' > "$archive"
 submit() { "$root/scripts/notarize-stage.sh" submit app "$archive" "$1"; }
@@ -121,6 +121,21 @@ unset TEST_SUBMIT_MODE
 submit "$work/with-id" > /dev/null
 # shellcheck source=scripts/lib/macos.sh
 source "$root/scripts/lib/macos.sh"
+cat > "$work/bin/lipo" <<'STUB'
+#!/bin/bash
+[[ $1 == -archs ]] || exit 86
+printf '%s\n' "${TEST_ARCHITECTURES:-arm64 x86_64}"
+STUB
+chmod +x "$work/bin/lipo"
+nw_require_universal "$archive"
+[[ $(nw_arch "$archive") == universal ]] || fail 'Universal architecture detection failed.'
+export TEST_ARCHITECTURES=arm64
+expect_failure nw_require_universal "$archive"
+[[ $(nw_arch "$archive") == arm64 ]] || fail 'Apple Silicon architecture detection failed.'
+export TEST_ARCHITECTURES=x86_64
+expect_failure nw_require_universal "$archive"
+[[ $(nw_arch "$archive") == x86_64 ]] || fail 'Intel architecture detection failed.'
+unset TEST_ARCHITECTURES
 export TEST_IMAGE_MODE=transient
 nw_create_dmg "$work" "$work/test.dmg" Test > "$work/image.log" 2>&1
 [[ $(cat "$work/images") == 3 ]] || fail 'Resource busy retry was not bounded at three attempts.'

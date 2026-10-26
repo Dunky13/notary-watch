@@ -6,15 +6,16 @@ nw_version() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$
 nw_validate_version() { [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || nw_fail 'Version must be numeric x.y.z.'; }
 nw_sha() { shasum -a 256 "$1" | awk '{print $1}'; }
 nw_arch() {
-  if lipo -verify_arch arm64 "$1" >/dev/null 2>&1 && lipo -verify_arch x86_64 "$1" >/dev/null 2>&1; then printf universal;
-  elif lipo "$1" -verify_arch arm64 >/dev/null 2>&1; then printf arm64;
-  elif lipo "$1" -verify_arch x86_64 >/dev/null 2>&1; then printf x86_64;
+  local architectures
+  architectures=$(lipo -archs "$1") || nw_fail 'Could not inspect executable architectures.'
+  if [[ " $architectures " == *' arm64 '* && " $architectures " == *' x86_64 '* ]]; then printf universal;
+  elif [[ $architectures == arm64 ]]; then printf arm64;
+  elif [[ $architectures == x86_64 ]]; then printf x86_64;
   else nw_fail 'Unsupported macOS executable architecture.'; fi
 }
 nw_require_universal() {
-  # Separate checks also work with lipo versions that reject a multi-arch verify.
-  lipo -verify_arch arm64 "$1"
-  lipo -verify_arch x86_64 "$1"
+  # -archs has stable argument parsing across Xcode's different lipo versions.
+  [[ $(nw_arch "$1") == universal ]] || nw_fail 'Both arm64 and x86_64 executable slices are required.'
 }
 nw_create_dmg() {
   local source=$1 target=$2 volume=$3 attempt=1 status scratch

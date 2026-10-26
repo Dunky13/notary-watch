@@ -22,7 +22,7 @@ Open the DMG, drag **Notary Watch.app** to **Applications**, eject the image, an
 
 Local development packages use an ad hoc signature. Developer ID distribution and Apple acceptance are separate operations described below. Normal packaging never reads Apple signing credentials or submits to Apple.
 
-The verifier checks the disk image, Applications symlink, app signature, bundle identity, executable hash, and a copy into an owned temporary Applications directory. It does not overwrite the real Applications directory. Universal builds check both architecture slices separately, including on versions of `lipo` that reject multi-architecture verification in one invocation.
+The verifier checks the disk image, Applications symlink, app signature, bundle identity, executable hash, and a copy into an owned temporary Applications directory. It does not overwrite the real Applications directory. Universal builds inspect the architecture inventory with `lipo -archs` and require both Apple Silicon and Intel slices, avoiding incompatible `-verify_arch` argument parsers across Xcode versions. Release acceptance adds quarantine to the owned app copy before Gatekeeper assessment.
 
 ## CI
 

@@ -37,6 +37,8 @@ if [[ $mode == release ]]; then
   nw_verify_developer_id "$copy"
   xcrun stapler validate "$image"
   xcrun stapler validate "$copy"
+  # Test downloaded-app policy on the owned copy, retaining the original assets.
+  xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");NotaryWatchAcceptance;" "$copy"
   spctl --assess --type execute --verbose=2 "$copy"
   spctl --assess --type open --context context:primary-signature --verbose=2 "$image"
 fi
