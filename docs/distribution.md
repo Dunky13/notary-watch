@@ -4,21 +4,25 @@ Notary Watch targets macOS 14 and later. The distribution build contains Apple S
 
 ## Production entry point
 
-After a clean main commit passes CI, start a signed production candidate from the repository root:
+A successful main-push **CI** run automatically queues **Distribution** for that exact source run. The signing job waits for human approval of **apple-signing**. PR CI, manually dispatched CI, and unsuccessful CI cannot start signing. Automatic candidates retain their verified downloads as workflow artifacts; public publication is still an explicit manual choice.
+
+After the automatic Distribution run completes, publish its verified candidate with a new manual recovery dispatch from a clean main checkout:
+
+```sh
+./scripts/ci/start-release.sh --resume PREVIOUS_DISTRIBUTION_RUN_ID --publish
+```
+
+Replace `PREVIOUS_DISTRIBUTION_RUN_ID` with the latest completed automatic or manual Distribution run ID for that build. To recover a failed candidate without requesting publication, omit `--publish`. If the original source is older than current main, also pass `--build-run-id ORIGINAL_CI_RUN_ID`.
+
+Only when no Distribution run has ever existed for a successful CI build, use the helper without `--resume` to start its first candidate:
 
 ```sh
 ./scripts/ci/start-release.sh
 ```
 
-To request a stable public release, explicitly choose publication:
+The automatic candidate retains signed downloads as workflow artifacts. A manual recovery with `--publish` publishes `v<app version>` only after Developer ID signing, both Apple notarization stages, stapling, Gatekeeper, fresh Apple Silicon and Intel acceptance, and approval of the **production-release** environment. The **apple-signing** environment separately approves credential use. Both environments are restricted to main and require a human reviewer. A production build uses Swift release optimization and contains both native architectures; CI first packages it with a development signature before the protected job replaces that signature.
 
-```sh
-./scripts/ci/start-release.sh --publish
-```
-
-The first command retains signed downloads as workflow artifacts. The second publishes `v<app version>` only after Developer ID signing, both Apple notarization stages, stapling, Gatekeeper, fresh Apple Silicon and Intel acceptance, and approval of the **production-release** environment. The **apple-signing** environment separately approves credential use. Both environments are restricted to main and require a human reviewer. A production build uses Swift release optimization and contains both native architectures; CI first packages it with a development signature before the protected job replaces that signature.
-
-The helper selects a successful main-push CI run for the exact clean current main commit and refuses duplicate distribution attempts. `--build-run-id` explicitly selects another retained successful main CI run, including when recovering after main advances. The workflow independently verifies repository, branch, event, source SHA, archive checksum, bundle metadata, build number and actual architecture slices before loading credentials.
+The helper selects a successful main-push CI run for the exact clean current main commit and refuses duplicate distribution attempts. `--build-run-id` explicitly selects another retained successful main CI run, including when recovering after main advances. The workflow independently verifies the CI completion event, repository, branch, source SHA, archive checksum, bundle metadata, build number and actual architecture slices before loading credentials. The event source commit must match the selected successful CI run, and immutable artifact IDs remain pinned.
 
 ## Local drag-and-drop installer
 
@@ -91,15 +95,15 @@ The signing wrapper is restricted to isolated GitHub-hosted runners. It imports 
 
 ## Run distribution
 
-Wait for a successful **main-push** CI run. In **Actions → Distribution → Run workflow**, choose main and enter its CI run ID. Leave **resume_run_id** blank for the first signing attempt. Leave **publish_release** unchecked to retain verified signed downloads as workflow artifacts for review.
+Normal main-push CI completion queues a candidate automatically. Use a manual dispatch for recovery or explicit publication. Wait for a successful **main-push** CI run. In **Actions → Distribution → Run workflow**, choose main and enter its CI run ID. Set **resume_run_id** to the latest completed Distribution run for that build. Leave it blank only when no Distribution run has ever existed for the build. Leave **publish_release** unchecked to retain verified signed downloads as workflow artifacts for review.
 
 The equivalent GitHub CLI command, run from the repository root, is:
 
 ```sh
-gh workflow run distribution.yml --ref main -f build_run_id=123456789 -F publish_release=false
+gh workflow run distribution.yml --ref main -f build_run_id=123456789 -f resume_run_id=987654321 -F publish_release=false
 ```
 
-Replace the example run ID with the actual CI run. The workflow refuses PR runs, runs from another repository, unsuccessful CI, and missing or expired artifacts.
+Replace the example CI and recovery run IDs with the actual runs. The workflow refuses PR runs, runs from another repository, unsuccessful CI, and missing or expired artifacts.
 
 The protected signing job:
 
@@ -129,7 +133,7 @@ The helper supports the same recovery:
 ./scripts/ci/start-release.sh --build-run-id 123456789 --resume 987654321
 ```
 
-Add `--publish` only if publication is intended. A new dispatch for a previously attempted build without an explicit recovery run is refused. Workflow reruns are refused; use a new manual dispatch with recovery instead. Recovery must use the latest earlier distribution attempt for that candidate, so an older snapshot cannot hide a newer submission. Missing or expired state on that latest attempt requires reconciliation. The workflow validates the previous run's repository, main branch, workflow, and build-specific checkpoint name. It restores the exact signed archives and checks the original build identity. Recorded submissions are queried again, never uploaded again. A stapling or ticket-service failure can be retried against the same accepted bytes. A newer build does not interrupt an active distribution run for another build.
+Add `--publish` only if publication is intended. A new dispatch for a previously attempted build without an explicit recovery run is refused. Workflow reruns are refused; use a new manual dispatch with recovery instead. Recovery must use the latest earlier distribution attempt for that candidate, so an older snapshot cannot hide a newer submission. Missing or expired state on that latest attempt requires reconciliation. The workflow validates the previous run's repository, main branch, workflow, and build-specific checkpoint name. It selects the checkpoint for the latest attempted signing/notarization stage using the stage label, rather than the artifact ID. GitHub artifact IDs are not chronological. If that stage's checkpoint is missing or expired, recovery fails instead of restoring an older snapshot that could omit a submission ID. It restores the exact signed archives and checks the original build identity. Recorded submissions are queried again, never uploaded again. A stapling or ticket-service failure can be retried against the same accepted bytes. A newer build does not interrupt an active distribution run for another build.
 
 **Use a new manual dispatch with resume_run_id after a failure.** A plain “Re-run failed jobs” does not automatically restore a checkpoint from an earlier run attempt. Download and retain diagnostics before the 30-day artifact expiration.
 

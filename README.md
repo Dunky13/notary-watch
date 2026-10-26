@@ -93,7 +93,7 @@ Quit an already-running instance first when changing launch arguments.
 
 ## Production releases
 
-The [distribution guide](docs/distribution.md) is the entry point for protected Developer ID releases, stable GitHub publication, and recovery. From a clean main checkout with green CI, run `./scripts/ci/start-release.sh` to prepare a signed candidate, or add `--publish` to request a stable release after approval.
+The [distribution guide](docs/distribution.md) is the entry point for protected Developer ID releases, stable GitHub publication, and recovery. Successful main-push CI automatically queues a candidate for signing approval. After that automatic run completes, use `./scripts/ci/start-release.sh --resume PREVIOUS_DISTRIBUTION_RUN_ID --publish` from a clean main checkout to request stable publication after approval. Replace the placeholder with the latest completed Distribution run ID.
 
 ## Build and test
 
