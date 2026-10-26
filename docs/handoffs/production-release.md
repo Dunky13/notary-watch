@@ -1,30 +1,33 @@
 # Production release handoff
 
-The production pipeline promotes the exact universal release binary from successful main-push CI. It does not recompile with signing credentials loaded. Native tests and installer startup run on Apple Silicon and Intel; all jobs use macOS. The qualified CI toolchain is Xcode 16.4.
+## Contract and frozen baseline
 
-The [distribution guide](../distribution.md) owns setup, commands, credential names and recovery instructions. `scripts/ci/start-release.sh` is the operator entry point. Successful main-push CI automatically queues a candidate; stable publication remains a distinct manual choice; both protected environments require a main-branch human approval.
+Notary Watch builds with native Swift Package Manager release optimization, combines arm64 and x86_64 into one universal macOS 14+ app, then produces an app ZIP and drag-and-drop DMG. Bundle identity remains `dev.notarywatch.local`. No updater feed or separate update-signing authority exists. The isolated Developer ID team and existing user preferences/Keychain profiles remain authoritative.
 
-## Trust and recovery
+The implementation baseline was main `cbf9dcf1b9c446fa312eef32445fc6af4d77f625`. Read-only live capture on 2026-10-26 found required fresh `ci-required` checks, enforced administrator protection, no approving PR review requirement, and two release environments (`apple-signing`, `production-release`) each requiring a reviewer and permitting only the main branch. Main CI run 40335339970 succeeded; automatic Distribution 40337094622 was waiting for signing approval. The earlier failed signing run 40322615271 stopped before import or Apple upload. These are historical witnesses, not qualification of this implementation.
 
-- Source metadata binds commit, original CI run, version/build, archive hash and actual universal slices before credential use.
-- Temporary nonextractable signing identities stay in an owned isolated Keychain; passwords travel through private standard input. Cleanup restores the exact search list, deletes credentials, preserves child failure, and fails promotion if cleanup fails.
-- A credential-free initial checkpoint allows import failures to recover. Subsequent allowlisted checkpoints retain immutable submitted bytes, intents and bound UUID receipts. Unknown upload outcomes require reconciliation, never automatic upload retry. Prior distribution attempts require an explicit completed recovery run, whether the previous attempt was automatically queued or manually dispatched.
-- Apple must accept each named app ZIP and installer DMG. Typed logs must match identifiers and any filename/hash fields. Warning diagnostics are retained; malformed, missing, rejected or contradictory evidence fails. Both app and installer tickets are stapled and validated.
-- Final outputs are transactional; fresh acceptance verifies installed copies, signatures, Gatekeeper, tickets, checksums and startup on both architectures.
-- Stable publication stages a draft, compares downloaded remote bytes to the accepted candidate, and only then publishes `v<version>`. Existing assets cannot be overwritten. Reused versions identifying another candidate fail closed.
+The user explicitly authorized PR, merge, removal of only those two recurring release reviewer rules, real Apple submissions, same-candidate qualification and stable publication. Main protection, branch/tag deployment restrictions, isolated secrets and machine acceptance gates remain. No other environment is in scope.
 
-## Verification boundaries
+## Automatic policy and flow
 
-Credential-free CI runs formatting, ShellCheck, Actionlint, Swift tests, synthetic submission/recovery/cleanup/dispatch/publication failures, the installed Security parser, universal optimized compilation, image/copy verification and app startup. Synthetic success does not establish real Developer ID import, Apple acceptance, stapling or public publication.
+Successful same-repository main-push CI starts the full stable release. Version is configured major/minor plus original CI workflow run number as patch; the same number is the bundle build. The exact CI attempt, artifact ID, source, archive hash, app metadata and actual universal slices are checked before credentials. CI remains credential-free. Xcode 16.4 remains the selected hosted toolchain.
 
-The required live boundary is provisioning the documented Apple environment secrets/API identifiers, approving signing, and, when explicitly requested, approving publication. The local monitor's saved profile stays independent of CI credentials. No private-key export, trust exception or approval bypass is part of setup.
+The signer replaces signatures without rebuilding, using an isolated nonextractable temporary identity, hardened runtime and timestamps. Private-stdin Security commands, exact search-list restoration, credential deletion and cleanup failure propagation remain gates. App ZIP submission/Accepted diagnostic/staple precedes DMG construction; DMG signing/submission/Accepted diagnostic/staple precedes final output. Quarantined copy Gatekeeper checks and fresh ARM/Intel signature/ticket/install/startup acceptance remain mandatory.
 
-## Automatic candidate queue
+The [distribution guide](../distribution.md) owns operator commands and configuration. Normal operation needs no dispatch or reviewer approval. Manual recovery enters the same stable path and must reference the latest completed distribution attempt for the original successful main-push CI.
 
-`workflow_run` listens to completed **CI** runs on main. The source job and resolver require a successful completed push from this repository, bind the event source SHA to the fetched successful CI run, and retain the existing exact artifact and checksum checks. PR CI, manual CI, failed CI, foreign repositories, mismatched commits and malformed completion events fail before credentials. The selected original run ID is used consistently for concurrency, download handoffs, checkpoints and receipts. Automatic runs retain the protected signing gate and cannot publish; stable publication is explicitly manual.
+## Durable recovery
 
-## Recovery qualification from the first hosted attempt
+Private draft `notary-state-ci-<original CI run>` retains immutable checksum-paired source, per-execution stage snapshots, inline upload intents/UUID receipts, and exact finalized downloads. It must never become public. Only allowlisted regular files enter custody; archives, source/run/attempt bindings and exact asset IDs are checked during restore. Ordinary artifacts are convenience copies, not the long-term recovery authority.
 
-The first distribution failed in signing setup before credential import, signing or Apple upload because the job began before secret provisioning. Its initial and preparation checkpoints survived. GitHub returned an older checkpoint with a numerically greater artifact ID than the newer preparation checkpoint, so recovery must select by recorded attempt/stage rather than numeric artifact ID. The resolver also checks the previous signing job's highest attempted stage and refuses missing or expired matching state, preventing fallback that could lose an Apple submission UUID.
+An intent is durably verified before any upload, and a captured UUID is persisted immediately. Runner loss between the Apple upload and durable UUID persistence leaves a reservation requiring reconciliation; it never causes a blind second upload. Missing newest state cannot fall back to an earlier attempt. A bound pending/diagnosed transport state can resume the same UUID automatically. Terminal/mismatched/malformed evidence stops and alerts. Unknown upload identity needs Apple-history reconciliation. Cancellation is not automatically reversed.
 
-The existing encrypted Hikyo signing backups and targeted Keychain password entries were verified privately, and this repository's protected Apple environment was provisioned. Actual notarization-key authentication succeeded. No private key was re-exported from Keychain, access controls were unchanged, and temporary decrypted material was removed.
+Release continuation runs after Distribution completion and every fifteen minutes, with at most twelve attempts per original build. Final custody permits retrying acceptance/publication without importing credentials, recompilation, resigning or repacking. Publication stages a draft, verifies the exact four remotely downloaded assets, then publishes stable; existing assets cannot be overwritten. Older delayed candidates cannot move latest backwards.
+
+## Validation and remaining evidence
+
+The required local checks are `scripts/ci/check.sh`, including offline signing/cleanup, submission/log binding, durable custody corruption/path/identity tests, controller recovery tests and transactional publication failures. `ci-required` additionally requires native Swift tests on ARM/Intel and universal installer packaging/startup on the hosted selected toolchain.
+
+PR CI run 40352020268 passed both native test jobs and universal packaging but exposed an inherited-run-ID assumption in the inline custody fixture and an undeclared ripgrep dependency. Fixtures now set their execution identity explicitly, and the portable leak scan fails closed on scanner errors. The full shell check batch was reproduced with hosted run variables before the repair was pushed.
+
+Synthetic providers establish failure contracts only. Real Developer ID import, both Accepted UUIDs and logs, both staples, native acceptance, same-candidate continuation, published asset IDs/hashes and independent public downloads must be reported separately from source tests. Qualification evidence belongs in the release execution report; local HTML evidence reports stay outside Git. No provider success is inferred from these implementation notes.

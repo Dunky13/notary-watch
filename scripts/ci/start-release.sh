@@ -3,10 +3,10 @@ set -euo pipefail
 # shellcheck source=scripts/lib/macos.sh
 source "$(dirname -- "$0")/../lib/macos.sh"
 cd "$NW_ROOT"
-publish=false resume='' run=''
+resume='' run=''
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --publish) publish=true; shift ;;
+    --publish) shift ;; # Compatibility: all eligible candidates now publish automatically.
     --resume) [[ $# -ge 2 ]] || nw_fail 'Pass the previous distribution run ID.'; resume=$2; shift 2 ;;
     --build-run-id) [[ $# -ge 2 ]] || nw_fail 'Pass the original CI run ID.'; run=$2; shift 2 ;;
     *) nw_fail 'Usage: start-release.sh [--publish] [--resume previous-distribution-run-id] [--build-run-id original-CI-run-id]' ;;
@@ -35,9 +35,7 @@ else
     "$work/distributions.json" >/dev/null || nw_fail 'Recovery run must be completed and belong to this build.'
   [[ $(jq -r 'max_by(.run_number).id' "$work/distributions.json") == "$resume" ]] || nw_fail 'Recovery must use the latest distribution attempt; an older checkpoint can omit newer submissions.'
 fi
-if [[ $publish == true ]]; then
-  printf 'Requesting production publication after signing and release environment approvals.\n'
-fi
-jq -n --arg build "$run" --arg resume "$resume" --arg publish "$publish" \
-  '{build_run_id:$build,resume_run_id:$resume,publish_release:$publish}' |
+printf 'Requesting the automatic stable release path after all acceptance gates.\n'
+jq -n --arg build "$run" --arg resume "$resume" \
+  '{build_run_id:$build,resume_run_id:$resume}' |
   gh workflow run distribution.yml --repo "$repo" --ref main --json

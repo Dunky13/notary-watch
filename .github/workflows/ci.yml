@@ -55,7 +55,10 @@ jobs:
       - name: Build Apple Silicon and Intel slices, then combine
         env:
           BUILD_NUMBER: ${{ github.run_number }}
-        run: scripts/build-app.sh --universal
+        run: |
+          RELEASE_VERSION=$(scripts/ci/release-version.sh)
+          export RELEASE_VERSION
+          scripts/build-app.sh --universal
       - name: Package development ZIP and DMG
         run: scripts/package-macos.sh
       - name: Verify production candidate provenance before credentials

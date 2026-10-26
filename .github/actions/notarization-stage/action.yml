@@ -29,6 +29,8 @@ runs:
         APPLE_DEVELOPER_ID_P12_BASE64: ${{ inputs.certificate }}
         APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ inputs.certificate-password }}
         APPLE_NOTARY_KEY_P8: ${{ inputs.notary-key }}
+        GH_TOKEN: ${{ github.token }}
+        NW_DURABLE_EVENTS: 'true'
       run: scripts/with-apple-signing.sh scripts/release-macos.sh "$OPERATION" original-build notary-state signed-release
     - name: Export only allowlisted recovery evidence
       if: always()
@@ -45,3 +47,16 @@ runs:
         if-no-files-found: warn
         retention-days: 30
         compression-level: 0
+    - name: Persist the safe checkpoint without artifact expiry
+      if: always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CHECKPOINT_SLOT: ${{ inputs.slot }}
+      run: scripts/ci/durable-state.sh save "safe-checkpoints/$CHECKPOINT_SLOT" "$CHECKPOINT_SLOT"
+    - name: Retain exact finalized download bytes before fresh acceptance
+      if: success() && inputs.operation == 'finish-installer'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: scripts/ci/durable-state.sh save-final signed-release

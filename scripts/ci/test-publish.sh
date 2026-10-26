@@ -21,6 +21,7 @@ if [[ $1 == api ]]; then
       jq -n --arg sha "$sha" '{sha:$sha}' ;;
     *'/releases?'*)
       [[ ${TEST_API_FAIL:-false} != true ]] || exit 33
+      if [[ ${TEST_NEWER_STABLE:-false} == true ]]; then printf '{"tag_name":"v10.0.0","draft":false,"prerelease":false}\n'; fi
       [[ ! -f $TEST_REMOTE/release.json ]] || cat "$TEST_REMOTE/release.json" ;;
     *) exit 91 ;;
   esac
@@ -43,6 +44,7 @@ elif [[ $1 == release ]]; then
       cp "$TEST_REMOTE/assets/"* "$destination/"
       if [[ ${TEST_CORRUPT_DOWNLOAD:-false} == true ]]; then printf 'corrupt\n' >> "$destination/release-manifest.json"; fi ;;
     edit)
+      printf '%s\n' "$*" > "$TEST_REMOTE/edit-arguments"
       jq '.draft = false' "$TEST_REMOTE/release.json" > "$TEST_REMOTE/next.json"
       mv "$TEST_REMOTE/next.json" "$TEST_REMOTE/release.json"
       : > "$TEST_REMOTE/published" ;;
@@ -79,6 +81,11 @@ unset TEST_WRONG_TAG
 export TEST_API_FAIL=true
 expect_failure 'A failed release inventory was treated as an absent release.'
 unset TEST_API_FAIL
+rm "$TEST_REMOTE/release.json" "$TEST_REMOTE/published" "$TEST_REMOTE/calls" "$TEST_REMOTE/assets/"*
+export TEST_NEWER_STABLE=true
+publish
+grep -F -- '--latest=false' "$TEST_REMOTE/edit-arguments" >/dev/null || fail 'An older recovered candidate moved latest backwards.'
+unset TEST_NEWER_STABLE
 printf 'changed\n' >> "$work/assets/Notary-Watch-App-$suffix.zip"
 expect_failure 'Changed final assets passed checksum validation.'
 printf 'Production publication recovery and promotion witnesses passed.\n'

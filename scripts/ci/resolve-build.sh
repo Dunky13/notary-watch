@@ -37,6 +37,16 @@ sha=$(jq -er '.head_sha | select(test("^[a-f0-9]{40}$"))' "$work/run.json")
 [[ -z $trigger_sha || $trigger_sha == "$sha" ]] || nw_fail 'The automatic completion event differs from the pinned CI source commit.'
 number=$(jq -er '.run_number' "$work/run.json")
 build_attempt=$(jq -er '.run_attempt | select(type == "number" and . >= 1 and . == floor)' "$work/run.json") || nw_fail 'Original CI attempt is missing.'
+durable=false
+load_durable() {
+  gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[]' |
+    jq -s --arg tag "notary-state-ci-$BUILD_RUN_ID" '[.[] | select(.tag_name == $tag)]' > "$work/durable.json"
+  [[ $(jq length "$work/durable.json") -le 1 ]] || nw_fail 'Ambiguous durable candidate custody.'
+  if [[ $(jq length "$work/durable.json") == 1 ]]; then
+    jq -e --arg sha "$sha" '.[0].draft == true and .[0].target_commitish == $sha' "$work/durable.json" >/dev/null || nw_fail 'Durable state belongs to a different source or was published.'
+    durable=true
+  fi
+}
 # A new workflow run otherwise starts with no local receipt and could upload the
 # same candidate again. Even an early failed run requires explicit reconciliation.
 gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/distribution.yml/runs?per_page=100" \
@@ -57,14 +67,31 @@ gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID/artifacts
   '[.[] | select(.expired == false and (.name | test("^Notary-Watch-unsigned-" + $run + "-a[1-9][0-9]*$")))
     | . + {attempt:(.name | capture("-a(?<attempt>[1-9][0-9]*)$").attempt | tonumber)}]
    | sort_by(.attempt) | group_by(.attempt) | last // []' > "$work/artifact.json"
-jq -e --argjson attempt "$build_attempt" 'length == 1 and .[0].attempt == $attempt' "$work/artifact.json" >/dev/null || nw_fail 'The successful CI attempt must have exactly one retained universal installer artifact.'
-artifact=$(jq -er '.[0].id' "$work/artifact.json")
+artifact=
+durable_source=false
+if jq -e --argjson attempt "$build_attempt" 'length == 1 and .[0].attempt == $attempt' "$work/artifact.json" >/dev/null; then
+  artifact=$(jq -er '.[0].id' "$work/artifact.json")
+elif [[ $(jq length "$work/artifact.json") == 0 && -n ${RESUME_RUN_ID:-} ]]; then
+  load_durable
+  [[ $durable == true ]] || nw_fail 'Original build expired without durable custody; never rebuild a recovery candidate.'
+  jq -e '.[0].assets | ([.[] | select(.name == "source.tar")] | length == 1) and ([.[] | select(.name == "source.tar.sha256")] | length == 1)' "$work/durable.json" >/dev/null || nw_fail 'Durable original build is incomplete.'
+  durable_source=true
+else
+  nw_fail 'The successful CI attempt must have exactly one retained universal installer artifact.'
+fi
 recovery=
+recovery_slot=
+final_available=false
 if [[ -n ${RESUME_RUN_ID:-} ]]; then
   validate_run "$RESUME_RUN_ID" '.github/workflows/distribution.yml'
   jq -e --arg build "$BUILD_RUN_ID" \
     '(.event == "workflow_dispatch" or .event == "workflow_run") and .status == "completed" and .run_attempt == 1 and .display_title == ("Notary Watch distribution from CI " + $build)' \
     "$work/run.json" >/dev/null || nw_fail 'Recovery must come from the completed automatic or manual distribution run for this candidate.'
+  load_durable
+  if [[ $durable == true ]] && jq -e '.[0].assets | any(.[]; .name == "final.tar" or .name == "final.tar.sha256")' "$work/durable.json" >/dev/null; then
+    jq -e '.[0].assets | ([.[] | select(.name == "final.tar")] | length == 1) and ([.[] | select(.name == "final.tar.sha256")] | length == 1)' "$work/durable.json" >/dev/null || nw_fail 'Final candidate custody is incomplete; do not regenerate different download bytes.'
+    final_available=true
+  else
   gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/attempts/1/jobs?per_page=100" \
     --jq '.jobs[]' | jq -s '[.[] | select(.name == "Sign app and notarize named app ZIP and installer DMG")]' > "$work/signing-job.json"
   jq -e 'length == 1 and .[0].status == "completed" and (.[0].steps | type == "array")' "$work/signing-job.json" >/dev/null || nw_fail 'Completed recovery signing-job evidence is missing or ambiguous.'
@@ -86,7 +113,30 @@ if [[ -n ${RESUME_RUN_ID:-} ]]; then
     conclusion=$(jq -er --arg name "${names[$index]}" '.[0].steps[] | select(.name == $name) | .conclusion' "$work/signing-job.json")
     [[ $conclusion == skipped ]] || required_slot=${slots[$index]}
   done
-  gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/artifacts?per_page=100" \
+  load_durable
+  if [[ $durable == true ]]; then
+    # Stage completion is optional only where no newer upload can have begun.
+    # Inline intent/UUID checkpoints cover a runner lost during submit; wait and
+    # ticket operations may safely resume from those same immutable bytes.
+    case $required_slot in
+      10|20) fallback_slots=(12 11) ;;
+      30|40) fallback_slots=(32 31) ;;
+      *) fallback_slots=() ;;
+    esac
+    selected_slot=$required_slot
+    if ! jq -e --arg name "state-r$RESUME_RUN_ID-s$required_slot.tar" '.[0].assets | any(.[]; .name == $name or .name == ($name + ".sha256"))' "$work/durable.json" >/dev/null; then
+      for slot in "${fallback_slots[@]}"; do
+        if jq -e --arg name "state-r$RESUME_RUN_ID-s$slot.tar" '.[0].assets | any(.[]; .name == $name or .name == ($name + ".sha256"))' "$work/durable.json" >/dev/null; then selected_slot=$slot; break; fi
+      done
+    fi
+    jq -e --arg name "state-r$RESUME_RUN_ID-s$selected_slot.tar" \
+      '.[0].assets | ([.[] | select(.name == $name)] | length == 1) and ([.[] | select(.name == ($name + ".sha256"))] | length == 1)' \
+      "$work/durable.json" >/dev/null || nw_fail 'Latest attempted stage lacks durable custody; refusing an older checkpoint.'
+    recovery_slot=$selected_slot
+  else
+    # Compatibility only for pre-adoption candidates, still bound to the exact
+    # highest attempted stage. New candidates always create durable custody.
+    gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/artifacts?per_page=100" \
     --jq '.artifacts[]' | jq -s --arg build "$BUILD_RUN_ID" --arg run "$RESUME_RUN_ID" \
     '[.[] | select(.expired == false and (.name | test("^Notary-Watch-state-" + $build + "-r" + $run + "-a[1-9][0-9]*-s(00|05|10|20|30|40)$")))
       | . + (.name | capture("-a(?<attempt>[1-9][0-9]*)-s(?<slot>00|05|10|20|30|40)$") | {attempt:(.attempt | tonumber),slot:(.slot | tonumber)})]
@@ -95,7 +145,11 @@ if [[ -n ${RESUME_RUN_ID:-} ]]; then
     'length > 0 and all(.[]; .attempt == 1) and .[-1].slot == $slot and ([.[] | select(.slot == $slot)] | length == 1)' \
     "$work/recovery.json" >/dev/null || nw_fail 'The latest attempted stage has no unique retained checkpoint. Reconcile its submission before recovery; refusing an older snapshot.'
   recovery=$(jq -er '.[-1].id' "$work/recovery.json")
+  fi
+  fi
 fi
 # Expose the pinned handoff only after every source and recovery gate passes.
 printf 'sha=%s\nrun_number=%s\nartifact_id=%s\n' "$sha" "$number" "$artifact" >> "$GITHUB_OUTPUT"
 if [[ -n $recovery ]]; then printf 'recovery_artifact_id=%s\n' "$recovery" >> "$GITHUB_OUTPUT"; fi
+if [[ -n $recovery_slot ]]; then printf 'recovery_slot=%s\n' "$recovery_slot" >> "$GITHUB_OUTPUT"; fi
+printf 'durable_source=%s\nfinal_available=%s\nbuild_attempt=%s\n' "$durable_source" "$final_available" "$build_attempt" >> "$GITHUB_OUTPUT"

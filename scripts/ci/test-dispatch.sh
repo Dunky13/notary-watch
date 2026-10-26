@@ -13,6 +13,11 @@ cat > "$work/bin/gh" <<'STUB'
 set -euo pipefail
 [[ $1 == api ]] || exit 90
 case $* in
+  *'/releases?'*)
+    if [[ ${TEST_DURABLE:-false} == true ]]; then
+      jq -n --arg target "${TEST_DURABLE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" --arg slot "${TEST_DURABLE_SLOT:-10}" \
+        '{tag_name:"notary-state-ci-100",draft:true,target_commitish:$target,assets:[{name:("state-r200-s"+$slot+".tar")},{name:("state-r200-s"+$slot+".tar.sha256")}]}'
+    fi ;;
   *'/workflows/distribution.yml/runs?'*)
     [[ ${TEST_LIST_FAIL:-false} != true ]] || exit 33
     # Current run always appears; it must not prevent the first dispatch.
@@ -151,6 +156,15 @@ export TEST_STAGE_SLOT=00
 resolve
 grep -Fx 'recovery_artifact_id=999' "$GITHUB_OUTPUT" >/dev/null || fail 'An unattempted signing flow could not recover its initial state.'
 unset TEST_STAGE_SLOT TEST_STAGE_CONCLUSION
+export TEST_DURABLE=true
+resolve
+grep -Fx 'recovery_slot=10' "$GITHUB_OUTPUT" >/dev/null || fail 'Durable recovery stage was not pinned.'
+export TEST_DURABLE_SLOT=00
+expect_failure 'An older durable checkpoint replaced the latest attempted stage.'
+unset TEST_DURABLE_SLOT
+export TEST_DURABLE_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+expect_failure 'Durable custody from another source was accepted.'
+unset TEST_DURABLE TEST_DURABLE_SHA
 export TEST_NO_JOBS=true
 expect_failure 'Missing job execution evidence selected a potentially stale snapshot.'
 unset TEST_NO_JOBS

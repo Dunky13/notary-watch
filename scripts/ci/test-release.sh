@@ -1,6 +1,9 @@
 #!/bin/bash
 # Offline regression witnesses for uploads, recovery, provenance, and owned Keychain cleanup.
 set -euo pipefail
+version_prefix=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$(dirname -- "$0")/../../Resources/Info.plist")
+[[ $(GITHUB_RUN_NUMBER=42 "$(dirname -- "$0")/release-version.sh") == "${version_prefix%.*}.42" ]]
+if GITHUB_RUN_NUMBER=invalid "$(dirname -- "$0")/release-version.sh" >/dev/null 2>&1; then exit 1; fi
 root="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
 work=$(mktemp -d "${TMPDIR:-/tmp}/notary-watch-tests.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
@@ -121,9 +124,11 @@ wait_for "$work/state" > "$work/wait.log"
 export TEST_WAIT_STATUS='In Progress'
 expect_failure wait_for "$work/state"
 [[ -s $work/state/app.submission.json ]] || fail 'A timed-out submission lost its ID.'
+jq -e '.retryable == true and .reason == "apple_pending"' "$work/state/app.recovery.json" >/dev/null || fail 'Pending submission did not retain a retry disposition.'
 export TEST_WAIT_STATUS=Invalid
 expect_failure wait_for "$work/state"
 grep 'Invalid' "$work/state/app.log.json" >/dev/null || fail 'Rejection log was not fetched.'
+jq -e '.retryable == false and .reason == "apple_rejected"' "$work/state/app.recovery.json" >/dev/null || fail 'Rejected submission was marked retryable.'
 unset TEST_WAIT_STATUS
 export APPLE_NOTARY_TIMEOUT=31m
 expect_failure wait_for "$work/state"
@@ -134,12 +139,14 @@ printf 'immutable fixture\n' > "$archive"
 export TEST_SUBMIT_MODE=unknown
 expect_failure submit "$work/ambiguous"
 [[ -f $work/ambiguous/app.intent.json ]] || fail 'Unknown upload result lost its intent.'
+jq -e '.retryable == false and .id == null and .reason == "reconcile_upload"' "$work/ambiguous/app.recovery.json" >/dev/null || fail 'Unknown upload became an automatic retry.'
 count=$(wc -l < "$work/uploads")
 expect_failure submit "$work/ambiguous"
 [[ $(wc -l < "$work/uploads") == "$count" ]] || fail 'An ambiguous upload was repeated.'
 export TEST_SUBMIT_MODE=with-id-error
 expect_failure submit "$work/with-id"
 [[ -f $work/with-id/app.submission.json ]] || fail 'An ID returned with an error was lost.'
+jq -e '.retryable == true and .reason == "upload_returned_uuid" and .id != null' "$work/with-id/app.recovery.json" >/dev/null || fail 'Retained UUID was not recoverable after upload client failure.'
 unset TEST_SUBMIT_MODE
 submit "$work/with-id" > /dev/null
 # shellcheck source=scripts/lib/macos.sh

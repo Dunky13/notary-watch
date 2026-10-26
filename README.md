@@ -93,7 +93,7 @@ Quit an already-running instance first when changing launch arguments.
 
 ## Production releases
 
-The [distribution guide](docs/distribution.md) is the entry point for protected Developer ID releases, stable GitHub publication, and recovery. Successful main-push CI automatically queues a candidate for signing approval. After that automatic run completes, use `./scripts/ci/start-release.sh --resume PREVIOUS_DISTRIBUTION_RUN_ID --publish` from a clean main checkout to request stable publication after approval. Replace the placeholder with the latest completed Distribution run ID.
+The [distribution guide](docs/distribution.md) describes automatic trusted-main stable releases, isolated Apple signing, durable submit-once recovery and exact-asset publication. A successful main-push CI run starts distribution and publishes only after real Apple acceptance, tickets, Gatekeeper and fresh ARM/Intel acceptance. Exceptional recovery uses the original CI run and latest completed distribution run; normal releases need no dispatch or approval.
 
 ## Build and test
 

@@ -4,11 +4,20 @@ set -euo pipefail
 umask 077
 # shellcheck source=scripts/lib/macos.sh
 source "$(dirname -- "$0")/lib/macos.sh"
-[[ $# == 2 ]] || nw_fail 'Usage: checkpoint-macos.sh state-directory new-checkpoint-directory'
+[[ $# == 2 || $# == 3 ]] || nw_fail 'Usage: checkpoint-macos.sh state-directory new-checkpoint-directory [owned-active-stage]'
 state=$1 output=$2
+active_stage=${3:-}
+[[ -z $active_stage || $active_stage == app || $active_stage == installer ]] || nw_fail 'Invalid owned active stage.'
 [[ -d $state && ! -L $state && -f $state/origin.json && ! -L $state/origin.json ]] || nw_fail 'No initialized release state exists to checkpoint.'
 [[ ! -e $output && ! -L $output ]] || nw_fail 'Checkpoint destination already exists.'
-[[ ! -e $state/app.lock && ! -e $state/installer.lock ]] || nw_fail 'Cannot snapshot an active notarization stage.'
+if [[ -n $active_stage ]]; then
+  # The locked notarization operation calls this synchronously at its intent or
+  # UUID boundary. Locks themselves and private client output are never exported.
+  [[ -d $state/$active_stage.lock && ! -L $state/$active_stage.lock ]] || nw_fail 'The inline checkpoint has no owned stage lock.'
+fi
+for stage in app installer; do
+  [[ $stage == "$active_stage" || ! -e $state/$stage.lock ]] || nw_fail 'Cannot snapshot another active notarization stage.'
+done
 mkdir -p "$(dirname -- "$output")"
 work=$(mktemp -d "$(dirname -- "$output")/.checkpoint.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
@@ -42,6 +51,31 @@ for stage in app installer; do
   if [[ -f $work/$stage.submission.json ]]; then
     [[ -f $work/$stage.intent.json ]] || nw_fail 'Checkpoint submission has no intent.'
     jq -e --slurpfile intent "$work/$stage.intent.json" 'del(.id) == $intent[0]' "$work/$stage.submission.json" >/dev/null || nw_fail 'Checkpoint submission differs from its intent.'
+  fi
+  file="$state/$stage.recovery.json"
+  if [[ -e $file || -L $file ]]; then
+    [[ -f $file && ! -L $file && -f $work/$stage.intent.json ]] || nw_fail 'Recovery disposition has no regular bound intent.'
+    jq -e --slurpfile intent "$work/$stage.intent.json" \
+      'del(.id,.operation,.outcome,.reason,.retryable,.wait_attempts,.execution_run_id,.execution_attempt) == $intent[0]
+       and (.operation == "submit" or .operation == "wait")
+       and (.wait_attempts | type == "number" and . >= 0 and . == floor)
+       and (.retryable | type == "boolean")
+       and (.execution_run_id == null or (.execution_run_id | type == "string" and test("^[1-9][0-9]*$")))
+       and (.execution_attempt == null or (.execution_attempt | type == "string" and test("^[1-9][0-9]*$")))
+       and ([.outcome,.reason,.retryable] as $state | [
+         ["failed","operation_started",false], ["failed","wait_started",false],
+         ["submitted","existing_uuid",false],
+         ["submitted","upload_returned_uuid",true], ["ambiguous","reconcile_upload",false],
+         ["pending","apple_pending",true], ["pending","wait_transport",true],
+         ["pending","log_transport",true], ["rejected","apple_rejected",false],
+         ["accepted","matching_accepted_log",false]] | any(.[]; . == $state))' \
+      "$file" >/dev/null || nw_fail 'Recovery disposition is malformed or differs from its receipt.'
+    if [[ -f $work/$stage.submission.json ]]; then
+      jq -e --slurpfile receipt "$work/$stage.submission.json" '.id == $receipt[0].id' "$file" >/dev/null || nw_fail 'Recovery disposition identifies a different submission.'
+    else
+      jq -e '.id == null and .retryable == false' "$file" >/dev/null || nw_fail 'Recovery disposition cannot retry without a retained UUID.'
+    fi
+    jq '{schema,stage,archive,sha256,commit,version,build,architecture,ci_run_id,id,operation,outcome,reason,retryable,wait_attempts,execution_run_id,execution_attempt}' "$file" > "$work/$stage.recovery.json"
   fi
   if [[ -e $state/$name || -L $state/$name ]]; then
     [[ -f $state/$name && ! -L $state/$name ]] || nw_fail 'Checkpoint archive is not a regular file.'
