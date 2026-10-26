@@ -80,16 +80,30 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+  orchestration:
+    name: Credential-free release orchestration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify Linux controller and pre-signing recovery contracts
+        run: |
+          scripts/ci/test-continuation.sh
+          scripts/ci/test-unstarted.sh
+          scripts/ci/test-durable-restore.sh
   ci-required:
     name: ci-required
-    needs: [lint, tests, package]
+    needs: [lint, tests, package, orchestration]
     if: always()
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require every macOS validation job
+      - name: Require every native and release validation job
         env:
           LINT: ${{ needs.lint.result }}
           TESTS: ${{ needs.tests.result }}
           PACKAGE: ${{ needs.package.result }}
-        run: '[[ "$LINT" == success && "$TESTS" == success && "$PACKAGE" == success ]]'
+          ORCHESTRATION: ${{ needs.orchestration.result }}
+        run: '[[ "$LINT" == success && "$TESTS" == success && "$PACKAGE" == success && "$ORCHESTRATION" == success ]]'

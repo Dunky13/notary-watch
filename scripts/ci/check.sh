@@ -15,3 +15,5 @@ bash scripts/ci/test-release-output.sh
 bash scripts/ci/test-durable-state.sh
 bash scripts/ci/test-continuation.sh
 bash scripts/ci/test-retirement.sh
+bash scripts/ci/test-unstarted.sh
+bash scripts/ci/test-durable-restore.sh

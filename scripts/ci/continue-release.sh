@@ -9,12 +9,17 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/notary-watch-continuation.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 gh api --paginate "repos/$GH_REPO/actions/workflows/distribution.yml/runs?per_page=100" --jq '.workflow_runs[]' |
   jq -s '[.[] | select(.display_title | test("^Notary Watch distribution from CI [1-9][0-9]*$"))]
-    | group_by(.display_title) | map({attempts:length,latest:max_by(.run_number)})
+    | group_by(.display_title) | map({attempts:length,latest:max_by(.run_number),runs:sort_by(.run_number)})
     | sort_by(.latest.run_number) | reverse | .[] | @base64' -r > "$work/candidates"
 gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[]' | jq -s '.' > "$work/releases.json"
 blocked=false
+queue_resume() {
+  jq -n --arg build "$1" --arg resume "$2" '{build_run_id:$build,resume_run_id:$resume}' |
+    gh workflow run distribution.yml --repo "$GH_REPO" --ref main --json
+  printf 'Queued continuation of original CI %s from distribution %s.\n' "$1" "$2"
+}
 while IFS= read -r candidate; do
-  printf '%s' "$candidate" | base64 -D > "$work/candidate.json"
+  printf '%s' "$candidate" | base64 --decode > "$work/candidate.json"
   attempts=$(jq -er '.attempts' "$work/candidate.json")
   run=$(jq -er '.latest.id' "$work/candidate.json")
   [[ $run =~ ^[1-9][0-9]*$ ]] || nw_fail 'Invalid continuation run identity.'
@@ -32,8 +37,17 @@ while IFS= read -r candidate; do
   BUILD_RUN_ID=$build
   export BUILD_SHA BUILD_RUN_ID
   jq --arg tag "notary-state-ci-$build" '[.[] | select(.tag_name == $tag)]' "$work/releases.json" > "$work/drafts.json"
-  # Legacy pre-adoption candidates have no durable automatic recovery authority.
-  [[ $(jq length "$work/drafts.json") != 0 ]] || continue
+  if [[ $(jq length "$work/drafts.json") == 0 ]]; then
+    jq '.runs' "$work/candidate.json" > "$work/lineage.json"
+    if "$NW_ROOT/scripts/ci/verify-unstarted.sh" "$work/lineage.json" "$GH_REPO" "$build" > "$work/unstarted-proof.log" 2>&1; then
+      if ((attempts >= 12)); then printf '::error::Candidate exhausted twelve automatic attempts: %s. Operator investigation required.\n' "$run"; blocked=true; continue; fi
+      queue_resume "$build" "$run"
+      exit 0
+    fi
+    # No empty-state retry is permitted for legacy or ambiguous executions.
+    printf 'Candidate CI %s has no durable custody or complete no-execution proof; held.\n' "$build"
+    continue
+  fi
   jq -e --arg sha "$BUILD_SHA" 'length == 1 and .[0].draft == true and .[0].prerelease == true and .[0].target_commitish == $sha' "$work/drafts.json" >/dev/null || nw_fail 'Invalid durable continuation custody.'
   retired=$(jq '[.[0].assets[] | select(.name == "retired.json")] | length' "$work/drafts.json")
   if [[ $retired != 0 ]]; then
@@ -87,9 +101,7 @@ while IFS= read -r candidate; do
   fi
   # Distribution serializes this original build and independently revalidates
   # latest-run ordering; duplicate scheduled/completion events cannot reupload.
-  jq -n --arg build "$build" --arg resume "$run" '{build_run_id:$build,resume_run_id:$resume}' |
-    gh workflow run distribution.yml --repo "$GH_REPO" --ref main --json
-  printf 'Queued continuation of original CI %s from distribution %s.\n' "$build" "$run"
+  queue_resume "$build" "$run"
   exit 0
 done < "$work/candidates"
 printf 'No eligible continuation.\n'
