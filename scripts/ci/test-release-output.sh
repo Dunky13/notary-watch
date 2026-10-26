@@ -154,13 +154,14 @@ printf '{"product":"Notary Watch","version":"9.8.6"}\n' > "$work/outputs/release
 fail() { printf 'release output test failed: %s\n' "$*" >&2; exit 1; }
 # Exercise the actual acceptance call site with the hosted CloudKit -1005
 # witness, independently for the DMG and copied app. Never accept a failed gate.
-mkdir "$work/ticket-tmp"
+ticket_tmp="$work/ticket-tmp's owned"
+mkdir "$ticket_tmp"
 for role in installer app; do
   for scenario in transient persistent unrelated authentication invalid foreign wrong-exit other-code mixed-invalid int term; do
     rm -f "$work/ticket-calls" "$work/ticket-backoff" "$work/assessments" "$work/mount-cleanup"
     export TEST_TICKET_TARGET=$role TEST_TICKET_FAILURE=$scenario
     result=0
-    TMPDIR="$work/ticket-tmp" "$work/repository/scripts/verify-macos.sh" "$work/state/$installer_archive" release > "$work/ticket-$role-$scenario.log" 2>&1 || result=$?
+    TMPDIR="$ticket_tmp" "$work/repository/scripts/verify-macos.sh" "$work/state/$installer_archive" release > "$work/ticket-$role-$scenario.log" 2>&1 || result=$?
     expected=68 calls=1 backoffs=0
     case $scenario in
       transient) expected=0 calls=3 backoffs=2 ;;
@@ -184,7 +185,7 @@ for role in installer app; do
       [[ $scenario != persistent ]] || failures=3
       [[ $(grep -c 'NSURLErrorDomain Code=-1005' "$work/ticket-$role-$scenario.log") == "$failures" ]] || fail 'Transient diagnostics were discarded.'
     fi
-    for path in "$work/ticket-tmp/"*; do
+    for path in "$ticket_tmp/"*; do
       [[ ! -e $path ]] || fail "$role $scenario left private validation or installation scratch."
     done
     if [[ $scenario == int || $scenario == term ]]; then
@@ -193,21 +194,27 @@ for role in installer app; do
     fi
   done
 done
-# A direct caller must also preserve cancellation status and cleanup. Bash 3.2
-# unwinds local function state differently when the helper's caller has no trap.
-for scenario in int term; do
+# Callers with and without function-local scratch must preserve cancellation
+# and cleanup, including when the owned temporary path needs shell quoting.
+for combination in direct:int direct:term nested:int nested:term; do
+  caller=${combination%:*}
+  scenario=${combination#*:}
   rm -f "$work/ticket-calls" "$work/ticket-backoff" "$work/signal-continued"
   export TEST_TICKET_TARGET=installer TEST_TICKET_FAILURE=$scenario
   result=0
-  TMPDIR="$work/ticket-tmp" /bin/bash -euo pipefail -c \
-    'source "$1"; nw_validate_ticket "$2"; : > "$TEST_OUTPUT_ROOT/signal-continued"' \
-    _ "$work/repository/scripts/lib/macos.sh" "$work/state/$installer_archive" \
-    > "$work/ticket-direct-$scenario.log" 2>&1 || result=$?
+  TMPDIR="$ticket_tmp" /bin/bash -euo pipefail -c \
+    'source "$1"; if [[ $3 == nested ]]; then
+       check_ticket() { local scratch=caller-owned; nw_validate_ticket "$1"; }
+       check_ticket "$2"
+     else nw_validate_ticket "$2"; fi
+     : > "$TEST_OUTPUT_ROOT/signal-continued"' \
+    _ "$work/repository/scripts/lib/macos.sh" "$work/state/$installer_archive" "$caller" \
+    > "$work/ticket-$caller-$scenario.log" 2>&1 || result=$?
   expected=130
   [[ $scenario != term ]] || expected=143
-  [[ $result == "$expected" ]] || fail "Direct $scenario cancellation returned $result, expected $expected."
+  [[ $result == "$expected" ]] || fail "$caller $scenario cancellation returned $result, expected $expected."
   [[ ! -e $work/signal-continued && ! -e $work/ticket-backoff ]] || fail 'Cancelled helper reached continuation or retried.'
-  for path in "$work/ticket-tmp/"*; do
+  for path in "$ticket_tmp/"*; do
     [[ ! -e $path ]] || fail 'Cancelled helper left private diagnostic scratch.'
   done
 done

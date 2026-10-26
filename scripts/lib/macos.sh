@@ -56,11 +56,13 @@ nw_verify_developer_id() {
 nw_validate_ticket() (
   # Validation contacts Apple's ticket service even for stapled downloads.
   # Retry only the observed transport failure, never a missing/invalid ticket.
-  # This subshell already isolates state. Bash 3.2 unwinds function locals
-  # before signal-triggered EXIT traps, so keep the cleanup path alive here.
-  target=$1
+  local target=$1 scratch attempt result cleanup
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/notary-watch-ticket.XXXXXX") || return $?
-  trap 'rm -rf -- "$scratch"' EXIT
+  # Capture this owned, shell-quoted path now. Bash 3.2 can unwind both our
+  # locals and a caller's locals before a signal-triggered EXIT trap runs.
+  printf -v cleanup 'rm -rf -- %q' "$scratch"
+  # shellcheck disable=SC2064 # Intentional capture before local scope unwinds.
+  trap "$cleanup" EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   for attempt in 1 2 3; do
