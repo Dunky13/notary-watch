@@ -53,3 +53,28 @@ nw_verify_developer_id() {
     printf '%s\n' "$details" | grep -E 'flags=.*runtime' >/dev/null || nw_fail 'Hardened Runtime is missing.'
   fi
 }
+nw_validate_ticket() (
+  # Validation contacts Apple's ticket service even for stapled downloads.
+  # Retry only the observed transport failure, never a missing/invalid ticket.
+  # This subshell already isolates state. Bash 3.2 unwinds function locals
+  # before signal-triggered EXIT traps, so keep the cleanup path alive here.
+  target=$1
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/notary-watch-ticket.XXXXXX") || return $?
+  trap 'rm -rf -- "$scratch"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  for attempt in 1 2 3; do
+    result=0
+    xcrun stapler validate "$target" > "$scratch/result" 2>&1 || result=$?
+    cat "$scratch/result" || return $?
+    [[ $result != 0 ]] || return 0
+    printf 'Ticket validation failed (attempt %s/3, exit %s).\n' "$attempt" "$result" >&2
+    if [[ $attempt == 3 || $result != 68 ]] ||
+      ! grep -Eq 'Error Domain=NSURLErrorDomain Code=-1005([^0-9]|$)' "$scratch/result" ||
+      ! grep -Eq 'https://api[.]apple-cloudkit[.]com/database/1/com[.]apple[.]gk[.]ticket-delivery/production/public/records/lookup([[:space:],}]|$)' "$scratch/result" ||
+      grep -Eiq 'HTTP[ /:]+(401|403)|unauthorized|forbidden|invalid credentials|invalid ticket|ticket.*(invalid|missing)' "$scratch/result"; then
+      return "$result"
+    fi
+    sleep 2 || return $?
+  done
+)
