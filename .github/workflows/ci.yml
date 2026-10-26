@@ -58,6 +58,12 @@ jobs:
         run: scripts/build-app.sh --universal
       - name: Package development ZIP and DMG
         run: scripts/package-macos.sh
+      - name: Verify production candidate provenance before credentials
+        env:
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/ci/release-preflight.sh dist/packages
       - name: Verify image, Applications shortcut, app signature, and installed copy
         run: scripts/verify-macos.sh dist/packages/*-development.dmg development
       - name: Smoke-test the packaged app
