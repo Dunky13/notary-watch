@@ -4,6 +4,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+env:
+  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 permissions:
   contents: read
 concurrency:
@@ -18,6 +20,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Verify the qualified Apple toolchain
+        run: scripts/ci/apple-toolchain.sh
       - name: Install workflow and shell checkers
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
@@ -35,10 +39,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Record Apple toolchain
-        run: |
-          xcodebuild -version
-          swift --version
+      - name: Verify the qualified Apple toolchain
+        run: scripts/ci/apple-toolchain.sh
       - run: swift test -j 2
   package:
     name: Universal drag-and-drop installer
@@ -48,6 +50,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Verify the qualified Apple toolchain
+        run: scripts/ci/apple-toolchain.sh
       - name: Build Apple Silicon and Intel slices, then combine
         env:
           BUILD_NUMBER: ${{ github.run_number }}

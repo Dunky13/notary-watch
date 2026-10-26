@@ -50,14 +50,16 @@ STUB
 cat > "$work/bin/gh" <<'STUB'
 #!/bin/bash
 set -euo pipefail
-if [[ $* == *'/artifacts?'* ]]; then
+if [[ $* == *'/workflows/distribution.yml/runs?'* ]]; then
+  printf '{"id":200,"status":"completed","display_title":"Notary Watch distribution from CI 100"}\n'
+elif [[ $* == *'/artifacts?'* ]]; then
   if [[ $* == *'/runs/200/'* ]]; then
     printf '{"id":201,"expired":false,"name":"Notary-Watch-state-100-r200-a1-s10"}\n'
   else
     printf '{"id":101,"expired":false,"name":"Notary-Watch-unsigned-100-a1"}\n'
   fi
 elif [[ $* == *'/runs/200'* ]]; then
-  printf '{"head_branch":"main","path":".github/workflows/distribution.yml","event":"workflow_dispatch","repository":{"full_name":"fixture/repo"},"head_repository":{"full_name":"fixture/repo"}}\n'
+  printf '{"head_branch":"main","path":".github/workflows/distribution.yml","event":"workflow_dispatch","status":"completed","display_title":"Notary Watch distribution from CI 100","repository":{"full_name":"fixture/repo"},"head_repository":{"full_name":"fixture/repo"}}\n'
 else
   printf '{"head_branch":"%s","path":".github/workflows/ci.yml","event":"%s","status":"completed","conclusion":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","run_number":7,"repository":{"full_name":"fixture/repo"},"head_repository":{"full_name":"fixture/repo"}}\n' "${TEST_SOURCE_BRANCH:-main}" "${TEST_SOURCE_EVENT:-push}"
 fi
@@ -66,6 +68,18 @@ cat > "$work/bin/security" <<'STUB'
 #!/bin/bash
 set -euo pipefail
 operation=$1; shift
+printf '%s\n' "$operation $*" >> "$TEST_ROOT/security-arguments"
+if [[ $operation == -iq ]]; then
+  IFS= read -r command_line
+  printf '%s\n' "$command_line" >> "$TEST_ROOT/security-input"
+  [[ $command_line =~ ^\"([a-z-]+)\" ]] || exit 96
+  operation=${BASH_REMATCH[1]}
+  # Only create-keychain needs an argument in this synthetic provider.
+  if [[ $operation == create-keychain ]]; then
+    [[ $command_line =~ [[:space:]]\"([^\"]+)\"[[:space:]]$ ]] || exit 97
+    set -- "${BASH_REMATCH[1]}"
+  fi
+fi
 case $operation in
   list-keychains)
     if [[ $* == *'-s'* ]]; then
@@ -75,7 +89,7 @@ case $operation in
     else cat "$TEST_ROOT/search-list"; fi
     ;;
   create-keychain) : > "${!#}" ;;
-  delete-keychain) rm -f -- "$1" ;;
+  delete-keychain) [[ ${TEST_DELETE_FAIL:-false} != true ]] || exit 41; rm -f -- "$1" ;;
   find-identity) printf '  1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Developer ID Application: Fixture (AB12CD34E5)"\n     1 valid identities found\n' ;;
   import) [[ ${TEST_IMPORT_FAIL:-false} != true ]] || exit 33 ;;
   unlock-keychain|set-keychain-settings|set-key-partition-list) ;;
@@ -85,14 +99,16 @@ STUB
 chmod +x "$work/bin/"*
 fail() { printf 'release test failed: %s\n' "$*" >&2; exit 1; }
 expect_failure() { if ("$@") > "$work/failure.log" 2>&1; then fail "Unexpected success: $*"; fi; }
-archive="$work/Notary-Watch-App-9.8.7-universal.zip"
+export BUILD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa BUILD_RUN_ID=100
+export RELEASE_VERSION=9.8.7 RELEASE_BUILD=7 RELEASE_ARCHITECTURE=universal
+archive="$work/Notary-Watch-App-9.8.7-build.7-100-universal.zip"
 printf 'immutable fixture\n' > "$archive"
 submit() { "$root/scripts/notarize-stage.sh" submit app "$archive" "$1"; }
 wait_for() { "$root/scripts/notarize-stage.sh" wait app "$archive" "$1"; }
 submit "$work/state" > "$work/submit.log"
 submit "$work/state" >> "$work/submit.log"
 [[ $(wc -l < "$work/uploads" | tr -d ' ') == 1 ]] || fail 'A recorded submission was uploaded twice.'
-grep -Fx 'Notary-Watch-App-9.8.7-universal.zip' "$work/uploads" >/dev/null || fail 'Submission name lost its product/version/stage.'
+grep -Fx 'Notary-Watch-App-9.8.7-build.7-100-universal.zip' "$work/uploads" >/dev/null || fail 'Submission name lost its product/version/build/stage.'
 wait_for "$work/state" > "$work/wait.log"
 [[ -s $work/state/app.log.json ]] || fail 'Successful notarization log was discarded.'
 export TEST_WAIT_STATUS='In Progress'
@@ -162,7 +178,9 @@ printf '    "/fixture/login.keychain-db"\n' > "$work/search-list"
 cp "$work/search-list" "$work/search-original"
 export GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RUNNER_TEMP="$work/runner"
 export APPLE_TEAM_ID=AB12CD34E5 APPLE_SIGNING_IDENTITY='Developer ID Application: Fixture (AB12CD34E5)'
-export APPLE_DEVELOPER_ID_P12_BASE64=Zml4dHVyZQ== APPLE_DEVELOPER_ID_P12_PASSWORD=fixture APPLE_NOTARY_KEY_P8=fixture
+# Literal shell metacharacters must survive the secure input serializer.
+# shellcheck disable=SC2016
+export APPLE_DEVELOPER_ID_P12_BASE64=Zml4dHVyZQ== APPLE_DEVELOPER_ID_P12_PASSWORD='fixture "quote" \\ $literal `literal`' APPLE_NOTARY_KEY_P8=fixture
 export APPLE_NOTARY_KEY_ID=FIXTURE123 APPLE_NOTARY_ISSUER_ID=12345678-1234-1234-1234-123456789abc
 cat > "$work/child.sh" <<'CHILD'
 #!/bin/bash
@@ -174,6 +192,8 @@ CHILD
 result=0
 "$root/scripts/with-apple-signing.sh" bash "$work/child.sh" > "$work/wrapper.log" 2>&1 || result=$?
 [[ $result == 12 ]] || { cat "$work/wrapper.log" >&2; fail 'Signing wrapper masked the child exit status or leaked raw credentials.'; }
+if grep -F -- "$APPLE_DEVELOPER_ID_P12_PASSWORD" "$work/security-arguments" >/dev/null; then fail 'Password reached security process arguments.'; fi
+grep -F '\"quote\"' "$work/security-input" >/dev/null || fail 'Secure stdin did not escape password quotes.'
 cmp -s "$work/search-list" "$work/search-original" || fail 'Original Keychain list was not restored.'
 [[ -z $(find "$work/runner" -mindepth 1 -print -quit) ]] || fail 'Temporary signing material survived failure.'
 export TEST_IMPORT_FAIL=true
@@ -182,4 +202,12 @@ result=0
 [[ $result == 33 ]] || fail 'Certificate import failure was masked.'
 cmp -s "$work/search-list" "$work/search-original" || fail 'Keychain list was not restored after import failure.'
 [[ -z $(find "$work/runner" -mindepth 1 -print -quit) ]] || fail 'Signing material survived import failure.'
+unset TEST_IMPORT_FAIL
+export TEST_DELETE_FAIL=true
+result=0
+"$root/scripts/with-apple-signing.sh" /usr/bin/true > "$work/wrapper-delete.log" 2>&1 || result=$?
+[[ $result != 0 ]] || fail 'Credential cleanup failure allowed successful promotion.'
+cmp -s "$work/search-list" "$work/search-original" || fail 'Keychain list was not restored on cleanup failure.'
+[[ -z $(find "$work/runner" -mindepth 1 -print -quit) ]] || fail 'Private files survived cleanup failure.'
+unset TEST_DELETE_FAIL
 printf 'Release regressions passed: descriptive names, immutable recovery, bounded retries, trusted provenance, and Keychain cleanup.\n'

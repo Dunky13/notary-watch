@@ -1,6 +1,24 @@
 # macOS distribution
 
-Notary Watch targets macOS 14 and later. The distribution build contains Apple Silicon and Intel slices in one app. All CI jobs use macOS runners; there are no Linux or Windows build targets.
+Notary Watch targets macOS 14 and later. The distribution build contains Apple Silicon and Intel slices in one app. CI explicitly selects the qualified Xcode 16.4 installation before builds or notarization. All CI jobs use macOS runners; there are no Linux or Windows build targets.
+
+## Production entry point
+
+After a clean main commit passes CI, start a signed production candidate from the repository root:
+
+```sh
+./scripts/ci/start-release.sh
+```
+
+To request a stable public release, explicitly choose publication:
+
+```sh
+./scripts/ci/start-release.sh --publish
+```
+
+The first command retains signed downloads as workflow artifacts. The second publishes `v<app version>` only after Developer ID signing, both Apple notarization stages, stapling, Gatekeeper, fresh Apple Silicon and Intel acceptance, and approval of the **production-release** environment. The **apple-signing** environment separately approves credential use. Both environments are restricted to main and require a human reviewer. A production build uses Swift release optimization and contains both native architectures; CI first packages it with a development signature before the protected job replaces that signature.
+
+The helper selects a successful main-push CI run for the exact clean current main commit and refuses duplicate distribution attempts. `--build-run-id` explicitly selects another retained successful main CI run, including when recovering after main advances. The workflow independently verifies repository, branch, event, source SHA, archive checksum, bundle metadata, build number and actual architecture slices before loading credentials.
 
 ## Local drag-and-drop installer
 
@@ -33,7 +51,7 @@ The verifier checks the disk image, Applications symlink, app signature, bundle 
 3. A universal release build, development ZIP and DMG, mounted-image and copy verification, and sample-mode app startup.
 4. `ci-required`, which fails if any required job fails or is skipped.
 
-The immutable unsigned artifact is named `Notary-Watch-unsigned-<CI run ID>-a<attempt>`. It contains the packages, checksums, and `build-metadata.json`, which binds the app archive to its commit, run, version, architecture, and SHA-256. CI has read-only repository permissions and does not receive Apple credentials. Artifact retention is 30 days.
+The immutable unsigned artifact is named `Notary-Watch-unsigned-<CI run ID>-a<attempt>`. It contains the packages, checksums, and `build-metadata.json`, which binds the app archive to its commit, run, version, build number, architecture, and SHA-256. CI has read-only repository permissions and does not receive Apple credentials. Artifact retention is 30 days.
 
 The package is built before signing credentials are loaded. Distribution signs these exact binaries without recompiling them.
 
@@ -59,9 +77,17 @@ Add these environment variables:
 | `APPLE_NOTARY_ISSUER_ID` | That team's API issuer UUID. |
 | `APPLE_NOTARY_TIMEOUT` | Optional wait per stage, default `10m`, maximum `30m`. |
 
-Use a Developer ID Application identity. A public `.cer` file alone does not contain the private key needed for signing. Export the identity from Keychain Access as a password-protected `.p12`. Generate the team API key in App Store Connect with sufficient notarization permissions. The monitor's saved Keychain profile is independent of these CI credentials.
+Use a Developer ID Application identity. A public `.cer` file alone does not contain the private key needed for signing. Use an existing password-protected `.p12` identity export, or explicitly authorize creation of an export through Keychain Access. The pipeline never exports a local private key itself. Generate the team API key in App Store Connect with sufficient notarization permissions. The monitor's saved Keychain profile is independent of these CI credentials.
 
-The signing wrapper is restricted to isolated GitHub-hosted runners. It imports a nonextractable private key into an owned temporary Keychain, selects exactly one matching valid identity, and restores the prior search list. It removes temporary files and the Keychain on success, failure, and ordinary cancellation. Raw secret values are removed from the signing child's environment. Builds and third-party actions are not run with the raw signing inputs in their environment. No trust exceptions or Hardened Runtime exception entitlements are added.
+The secure runtime credential card can install the missing signing inputs. For a repeatable CLI setup, provide an owned private JSON file with permissions `600`, outside the checkout, containing exactly the three secret names and the two API identifier variable names listed above. Secret values must be strings; the P8 string preserves PEM line breaks. Then run:
+
+```sh
+./scripts/ci/configure-apple-signing.sh "$SIGNING_CONFIG"
+```
+
+Here `SIGNING_CONFIG` is the path to that private file. The helper checks environment protection first, streams values to GitHub over standard input, and never prints them or places them in process arguments. Delete the input file after provisioning. The existing public team and signing identity variables remain separate. A local `notarytool` Keychain profile is not a transferable GitHub credential.
+
+The signing wrapper is restricted to isolated GitHub-hosted runners. It imports a nonextractable private key into an owned temporary Keychain, selects exactly one matching valid identity, and restores the prior search list. It removes temporary files and the Keychain on success, failure, and ordinary cancellation. Passwords enter Apple's interactive Security parser through private standard input with literal quoting, injection guards and an enforced byte limit. They are never command-line arguments. Raw secret values are removed from the signing child's environment. Builds and third-party actions are not run with the raw signing inputs in their environment. No trust exceptions or Hardened Runtime exception entitlements are added.
 
 ## Run distribution
 
@@ -79,15 +105,15 @@ The protected signing job:
 
 1. Downloads the original validated universal app and checks its build identity and archive digest.
 2. Signs the executable and app from the inside out, with Developer ID, secure timestamps, and Hardened Runtime. It verifies the Apple certificate chain, team, and runtime signature.
-3. Submits **Notary-Watch-App-1.2.0-universal.zip**. It records the upload intent, exact archive hash, and Apple submission ID before waiting.
+3. Submits **Notary-Watch-App-1.2.0-build.42-123456789-universal.zip**. It records the upload intent, exact archive hash, and Apple submission ID before waiting.
 4. Requires **Accepted**, retains the diagnostic log even on success, staples and validates the app, and prepares a signed DMG with the Applications shortcut.
-5. Submits **Notary-Watch-Installer-1.2.0-universal.dmg**, again retaining its hash and ID before waiting.
+5. Submits **Notary-Watch-Installer-1.2.0-build.42-123456789-universal.dmg**, again retaining its hash and ID before waiting.
 6. Requires installer acceptance, staples and validates the DMG, verifies Gatekeeper and the copied app, rebuilds the ZIP with the stapled app, and generates final checksums and `release-manifest.json`.
 7. Runs fresh acceptance jobs on Apple Silicon and Intel without signing secrets. These verify checksums, signatures, tickets, the installer copy, Gatekeeper, and sample-mode startup.
 
-Version numbers in submission names come from the original app's metadata. The product, version, architecture, and app/installer stage stay visible in Apple history. Submission archives do not use generic names such as `installer.zip` or `submit.zip`.
+Version and build numbers in submission names come from the original app's metadata; the CI run ID also distinguishes candidates. The product, version, build, architecture, and app/installer stage stay visible in Apple history. Submission archives do not use generic names such as `installer.zip` or `submit.zip`.
 
-Checkpoint artifacts retain public signed archives, receipts, and diagnostics after each stage, separately from final downloads. They do not contain private keys, exported identities, or the temporary signing Keychain. The final signed artifact is named `Notary-Watch-signed-<distribution run ID>-a<attempt>`.
+An initial credential-free checkpoint permits recovery from import failures. Checkpoints then retain exact signed archives, bound receipts, and validated allowlisted Apple diagnostic fields after each stage, separately from final downloads. Raw client output, working directories and credential scratch files are never uploaded. A receipt lock prevents concurrent use; each receipt binds the UUID to source commit, version/build, architecture, stage, original CI run, filename and submitted SHA-256. Accepted logs must match the ID, status and any filename/hash fields Apple returns. Error diagnostics, malformed evidence or missing logs block promotion. They do not contain private keys, exported identities, or the temporary signing Keychain. The final signed artifact is named `Notary-Watch-signed-<distribution run ID>-a<attempt>`.
 
 ## Resume without duplicate submissions
 
@@ -97,7 +123,13 @@ A finite wait timeout does not cancel Apple's request. To resume, dispatch **Dis
 gh workflow run distribution.yml --ref main -f build_run_id=123456789 -f resume_run_id=987654321 -F publish_release=false
 ```
 
-The workflow validates the previous run's repository, main branch, workflow, and build-specific checkpoint name. It restores the exact signed archives and checks the original build identity. Recorded submissions are queried again, never uploaded again. A stapling or ticket-service failure can be retried against the same accepted bytes. A newer build does not interrupt an active distribution run for another build.
+The helper supports the same recovery:
+
+```sh
+./scripts/ci/start-release.sh --build-run-id 123456789 --resume 987654321
+```
+
+Add `--publish` only if publication is intended. A new dispatch for a previously attempted build without an explicit recovery run is refused. Workflow reruns are refused; use a new manual dispatch with recovery instead. Recovery must use the latest earlier distribution attempt for that candidate, so an older snapshot cannot hide a newer submission. Missing or expired state on that latest attempt requires reconciliation. The workflow validates the previous run's repository, main branch, workflow, and build-specific checkpoint name. It restores the exact signed archives and checks the original build identity. Recorded submissions are queried again, never uploaded again. A stapling or ticket-service failure can be retried against the same accepted bytes. A newer build does not interrupt an active distribution run for another build.
 
 **Use a new manual dispatch with resume_run_id after a failure.** A plain “Re-run failed jobs” does not automatically restore a checkpoint from an earlier run attempt. Download and retain diagnostics before the 30-day artifact expiration.
 
@@ -105,9 +137,13 @@ If upload intent exists but no valid Apple ID was recovered, the operation fails
 
 DMG creation retries at most three times and only when the complete error is exactly `hdiutil: create failed - Resource busy`. Stapling retries at most three times for ticket-service errors 65 or 68. Other errors fail immediately. Each notary wait is bounded, and the outer signing job has a 90-minute limit. None of these limits promises Apple's turnaround time.
 
-## Optional publication
+## Stable production publication
 
-Set **publish_release** to true only when you intend to publish. After both fresh acceptance jobs pass, the workflow creates a GitHub prerelease named `build-<original CI run number>-<commit prefix>` containing the exact signed ZIP, DMG, manifest, and checksums. Existing releases are not overwritten. A successful source test or development package does not certify Developer ID signing, Apple acceptance, publication, or a real installed-user launch.
+Set **publish_release** to true only when publication is intended. After both fresh acceptance jobs pass, approve the **production-release** environment. The workflow creates a draft `v<app version>` release at the exact accepted source commit, uploads only the ZIP, DMG, manifest and checksums, downloads every uploaded asset and compares its digest, then makes the complete release stable and latest. It verifies the published tag resolves to the accepted source commit. A version already used for another commit or candidate fails; bump `CFBundleShortVersionString` for a new public version. A retry may fill missing draft assets but never overwrite them or mutate published release assets.
+
+Final downloads have different hashes from submitted archives because stapling and repacking change bytes. The release manifest records submitted hashes; `SHA256SUMS` covers the final downloads. Final output is staged transactionally and previous complete output survives a packaging failure.
+
+A successful source test or development package does not certify Developer ID signing, Apple acceptance, publication, or a real installed-user launch. The release workflow records those gates separately. See [the production handoff](handoffs/production-release.md) for implementation and operator boundaries.
 
 ## References
 

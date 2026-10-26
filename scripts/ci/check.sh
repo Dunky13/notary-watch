@@ -7,3 +7,8 @@ for script in scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh; do bash -n "$script
 actionlint
 plutil -lint Resources/Info.plist
 bash scripts/ci/test-release.sh
+bash scripts/ci/test-notary-evidence.sh
+bash scripts/ci/test-publish.sh
+bash scripts/ci/test-security-input.sh
+bash scripts/ci/test-dispatch.sh
+bash scripts/ci/test-release-output.sh

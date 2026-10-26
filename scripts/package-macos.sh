@@ -16,6 +16,8 @@ done
 [[ $app == /* ]] || app="$PWD/$app"
 [[ $output == /* ]] || output="$PWD/$output"
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
+[[ $build_number =~ ^[1-9][0-9]*$ ]] || nw_fail 'App build number must be a positive integer.'
 nw_validate_version "$version"
 arch=$(nw_arch "$app/Contents/MacOS/NotaryWatch")
 # These are explicitly development artifacts. Distribution replaces the signatures in a protected job.
@@ -41,8 +43,8 @@ cp "$work/$zip_name" "$work/$base.dmg" "$output/"
 if [[ -n ${GITHUB_SHA:-} ]]; then
   [[ $arch == universal ]] || nw_fail 'CI distribution requires a universal app.'
   jq -n --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
-    --arg version "$version" --arg archive "$zip_name" --arg dmg "$base.dmg" \
+    --arg version "$version" --arg build_number "$build_number" --arg archive "$zip_name" --arg dmg "$base.dmg" \
     --arg archive_sha256 "$(nw_sha "$output/$zip_name")" \
-    '{schema:1,commit:$sha,run_id:$run,run_attempt:$attempt,version:$version,architecture:"universal",archive:$archive,dmg:$dmg,archive_sha256:$archive_sha256}' > "$output/build-metadata.json"
+    '{schema:1,commit:$sha,run_id:$run,run_attempt:$attempt,version:$version,build_number:$build_number,architecture:"universal",archive:$archive,dmg:$dmg,archive_sha256:$archive_sha256}' > "$output/build-metadata.json"
 fi
 printf 'Drag-and-drop installer: %s/%s.dmg\n' "$output" "$base"

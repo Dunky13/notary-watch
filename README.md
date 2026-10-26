@@ -91,6 +91,10 @@ open "dist/Notary Watch.app" --args --demo
 
 Quit an already-running instance first when changing launch arguments.
 
+## Production releases
+
+The [distribution guide](docs/distribution.md) is the entry point for protected Developer ID releases, stable GitHub publication, and recovery. From a clean main checkout with green CI, run `./scripts/ci/start-release.sh` to prepare a signed candidate, or add `--publish` to request a stable release after approval.
+
 ## Build and test
 
 Requires Xcode with a Swift 6 toolchain. From this project directory:

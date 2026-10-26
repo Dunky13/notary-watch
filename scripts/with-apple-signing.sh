@@ -4,6 +4,8 @@ set -euo pipefail
 umask 077
 # shellcheck source=scripts/lib/macos.sh
 source "$(dirname -- "$0")/lib/macos.sh"
+# shellcheck source=scripts/lib/security-input.sh
+source "$(dirname -- "$0")/lib/security-input.sh"
 [[ $# -gt 0 ]] || nw_fail 'Pass the release operation to run.'
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted ]] || nw_fail 'Temporary signing Keychain setup is restricted to isolated GitHub-hosted runners.'
 for name in APPLE_DEVELOPER_ID_P12_BASE64 APPLE_DEVELOPER_ID_P12_PASSWORD APPLE_NOTARY_KEY_P8 APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
@@ -51,13 +53,13 @@ printf '%s' "$APPLE_NOTARY_KEY_P8" > "$work/notary.p8"
 keychain_password=$(openssl rand -hex 32)
 # create-keychain itself changes the search list; enable restoration before it.
 search_changed=true
-security create-keychain -p "$keychain_password" "$keychain" > "$work/keychain.log" 2>&1
+nw_security_private create-keychain -p "$keychain_password" "$keychain" > "$work/keychain.log" 2>&1
 keychain_created=true
 {
-  security unlock-keychain -p "$keychain_password" "$keychain"
+  nw_security_private unlock-keychain -p "$keychain_password" "$keychain"
   security set-keychain-settings -lut 21600 "$keychain"
-  security import "$work/identity.p12" -k "$keychain" -f pkcs12 -x -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+  nw_security_private import "$work/identity.p12" -k "$keychain" -f pkcs12 -x -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+  nw_security_private set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
 } >> "$work/keychain.log" 2>&1
 security list-keychains -d user -s "${original[@]}" "$keychain"
 security find-identity -v -p codesigning "$keychain" > "$work/identities.txt"

@@ -30,12 +30,18 @@ runs:
         APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ inputs.certificate-password }}
         APPLE_NOTARY_KEY_P8: ${{ inputs.notary-key }}
       run: scripts/with-apple-signing.sh scripts/release-macos.sh "$OPERATION" original-build notary-state signed-release
+    - name: Export only allowlisted recovery evidence
+      if: always()
+      shell: bash
+      env:
+        CHECKPOINT_SLOT: ${{ inputs.slot }}
+      run: scripts/checkpoint-macos.sh notary-state "safe-checkpoints/$CHECKPOINT_SLOT"
     - name: Preserve submission IDs and exact signed archives
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: Notary-Watch-state-${{ inputs.build-run-id }}-r${{ github.run_id }}-a${{ github.run_attempt }}-s${{ inputs.slot }}
-        path: notary-state/
+        path: safe-checkpoints/${{ inputs.slot }}/
         if-no-files-found: warn
         retention-days: 30
         compression-level: 0
