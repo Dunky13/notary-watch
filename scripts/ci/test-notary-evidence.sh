@@ -111,7 +111,9 @@ printf 'PRIVATE-CLIENT-OUTPUT\n' > "$work/state/signing.p8"
 [[ -f $work/safe/$TEST_EVIDENCE_NAME && -f $work/safe/app.submission.json && -f $work/safe/app.log.json && -f $work/safe/app.intent.json ]] || fail 'Safe checkpoint lost required recovery files.'
 [[ -f $work/safe/app.recovery.json ]] || fail 'Safe checkpoint lost its bound recovery disposition.'
 [[ ! -e $work/safe/private && ! -e $work/safe/raw.stderr && ! -e $work/safe/signing.p8 ]] || fail 'Private files entered checkpoint.'
-if rg -q 'PRIVATE-CLIENT-OUTPUT' "$work/safe"; then fail 'Raw fields entered safe checkpoint.'; fi
+scan_result=0
+grep -r -q 'PRIVATE-CLIENT-OUTPUT' "$work/safe" || scan_result=$?
+[[ $scan_result == 1 ]] || fail 'Raw fields entered safe checkpoint or the leak scan failed.'
 expect_failure "$root/scripts/checkpoint-macos.sh" "$work/state" "$work/safe"
 cp "$work/state/app.recovery.json" "$work/recovery-original.json"
 jq '.commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$work/recovery-original.json" > "$work/state/app.recovery.json"
@@ -143,10 +145,10 @@ for fixture in intent-failure receipt-failure complete; do
   cp "$work/state/origin.json" "$work/$fixture/origin.json"
 done
 uploads=$(wc -l < "$work/uploads" | tr -d ' ')
-NW_DURABLE_EVENTS=true TEST_EVENT_FAILURE=intent expect_failure "$work/hook-root/scripts/notarize-stage.sh" submit app "$work/intent-failure/$TEST_EVIDENCE_NAME" "$work/intent-failure"
+NW_DURABLE_EVENTS=true GITHUB_RUN_ID=899 GITHUB_RUN_ATTEMPT=1 TEST_EVENT_FAILURE=intent expect_failure "$work/hook-root/scripts/notarize-stage.sh" submit app "$work/intent-failure/$TEST_EVIDENCE_NAME" "$work/intent-failure"
 [[ $(wc -l < "$work/uploads" | tr -d ' ') == "$uploads" ]] || fail 'Upload proceeded without durable intent.'
-NW_DURABLE_EVENTS=true TEST_EVENT_FAILURE=receipt expect_failure "$work/hook-root/scripts/notarize-stage.sh" submit app "$work/receipt-failure/$TEST_EVIDENCE_NAME" "$work/receipt-failure"
-[[ -f $work/receipt-failure-intent-local/app.intent.json && -f $work/receipt-failure/app.submission.json ]] || fail 'Failed receipt custody lost its pre-upload reservation or local UUID.'
+NW_DURABLE_EVENTS=true GITHUB_RUN_ID=899 GITHUB_RUN_ATTEMPT=1 TEST_EVENT_FAILURE=receipt expect_failure "$work/hook-root/scripts/notarize-stage.sh" submit app "$work/receipt-failure/$TEST_EVIDENCE_NAME" "$work/receipt-failure"
+[[ -f $work/receipt-failure-intent-899/app.intent.json && -f $work/receipt-failure/app.submission.json ]] || fail 'Failed receipt custody lost its pre-upload reservation or local UUID.'
 [[ $(cat "$work/receipt-failure/events") == $'intent\nreceipt' ]] || fail 'Receipt was not persisted immediately after intent/upload.'
 NW_DURABLE_EVENTS=true GITHUB_RUN_ID=900 GITHUB_RUN_ATTEMPT=1 "$work/hook-root/scripts/notarize-stage.sh" submit app "$work/complete/$TEST_EVIDENCE_NAME" "$work/complete" > /dev/null
 jq -e '.id != null and .retryable == true and .reason == "upload_returned_uuid" and .execution_run_id == "900" and .execution_attempt == "1"' "$work/complete-receipt-900/app.recovery.json" >/dev/null || fail 'Durable receipt was not bound and resumable.'
