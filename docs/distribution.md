@@ -134,6 +134,8 @@ An exceptional failed candidate may be retired with `scripts/ci/retire-candidate
 
 DMG creation retries at most three times and only when the complete error is exactly `hdiutil: create failed - Resource busy`. Stapling retries at most three times for ticket-service errors 65 or 68. Other errors fail immediately. Each notary wait is bounded, and the outer signing job has a 90-minute limit. None of these limits promises Apple's turnaround time.
 
+Installer and copied-app ticket validation retry at most three times, with two-second delays, only for exit 68 accompanied by the observed Apple ticket-service `NSURLErrorDomain Code=-1005` connection loss. Every attempt's diagnostic remains in job output. Authentication failures, invalid tickets, unrelated endpoints/errors and exhausted transport attempts still fail acceptance; recovery keeps the same finalized bytes.
+
 ## Stable production publication
 
 After both fresh native acceptance jobs pass, the main-only production-release job creates a draft `v<version>` at the exact accepted source, uploads only the ZIP, DMG, manifest and checksums, downloads every asset and compares its digest, then publishes the complete stable release. A delayed older candidate cannot move the latest pointer backwards. Existing assets are never overwritten; a retry may only fill missing draft assets. The published tag must resolve to the accepted source commit. Durable final custody lets recovery reuse the same accepted download bytes.
