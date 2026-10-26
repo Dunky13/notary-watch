@@ -56,7 +56,9 @@ nw_verify_developer_id() {
 nw_validate_ticket() (
   # Validation contacts Apple's ticket service even for stapled downloads.
   # Retry only the observed transport failure, never a missing/invalid ticket.
-  local target=$1 scratch attempt result
+  # This subshell already isolates state. Bash 3.2 unwinds function locals
+  # before signal-triggered EXIT traps, so keep the cleanup path alive here.
+  target=$1
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/notary-watch-ticket.XXXXXX") || return $?
   trap 'rm -rf -- "$scratch"' EXIT
   trap 'exit 130' INT

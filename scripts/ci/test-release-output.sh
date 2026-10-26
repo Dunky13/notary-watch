@@ -46,6 +46,11 @@ if [[ $1 == stapler ]]; then
         invalid)
           printf 'The ticket is invalid.\n' >&2
           exit 65 ;;
+        int|term)
+          signal=INT
+          [[ $TEST_TICKET_FAILURE != term ]] || signal=TERM
+          kill -s "$signal" "$PPID"
+          exit 0 ;;
       esac
     fi
   fi
@@ -149,18 +154,21 @@ printf '{"product":"Notary Watch","version":"9.8.6"}\n' > "$work/outputs/release
 fail() { printf 'release output test failed: %s\n' "$*" >&2; exit 1; }
 # Exercise the actual acceptance call site with the hosted CloudKit -1005
 # witness, independently for the DMG and copied app. Never accept a failed gate.
+mkdir "$work/ticket-tmp"
 for role in installer app; do
-  for scenario in transient persistent unrelated authentication invalid foreign wrong-exit other-code mixed-invalid; do
-    rm -f "$work/ticket-calls" "$work/ticket-backoff"
+  for scenario in transient persistent unrelated authentication invalid foreign wrong-exit other-code mixed-invalid int term; do
+    rm -f "$work/ticket-calls" "$work/ticket-backoff" "$work/assessments" "$work/mount-cleanup"
     export TEST_TICKET_TARGET=$role TEST_TICKET_FAILURE=$scenario
     result=0
-    "$work/repository/scripts/verify-macos.sh" "$work/state/$installer_archive" release > "$work/ticket-$role-$scenario.log" 2>&1 || result=$?
+    TMPDIR="$work/ticket-tmp" "$work/repository/scripts/verify-macos.sh" "$work/state/$installer_archive" release > "$work/ticket-$role-$scenario.log" 2>&1 || result=$?
     expected=68 calls=1 backoffs=0
     case $scenario in
       transient) expected=0 calls=3 backoffs=2 ;;
       persistent) calls=3 backoffs=2 ;;
       invalid) expected=65 ;;
       wrong-exit) expected=70 ;;
+      int) expected=130 ;;
+      term) expected=143 ;;
     esac
     [[ $result == "$expected" ]] || fail "$role $scenario ticket validation returned $result, expected $expected."
     [[ $(wc -l < "$work/ticket-calls" | tr -d ' ') == "$calls" ]] || fail "$role $scenario ticket attempt count changed."
@@ -176,6 +184,31 @@ for role in installer app; do
       [[ $scenario != persistent ]] || failures=3
       [[ $(grep -c 'NSURLErrorDomain Code=-1005' "$work/ticket-$role-$scenario.log") == "$failures" ]] || fail 'Transient diagnostics were discarded.'
     fi
+    for path in "$work/ticket-tmp/"*; do
+      [[ ! -e $path ]] || fail "$role $scenario left private validation or installation scratch."
+    done
+    if [[ $scenario == int || $scenario == term ]]; then
+      [[ ! -e $work/assessments ]] || fail 'Cancelled validation reached later trust gates.'
+      [[ $(wc -l < "$work/mount-cleanup" | tr -d ' ') == 1 ]] || fail 'Cancelled validation left its owned mount attached.'
+    fi
+  done
+done
+# A direct caller must also preserve cancellation status and cleanup. Bash 3.2
+# unwinds local function state differently when the helper's caller has no trap.
+for scenario in int term; do
+  rm -f "$work/ticket-calls" "$work/ticket-backoff" "$work/signal-continued"
+  export TEST_TICKET_TARGET=installer TEST_TICKET_FAILURE=$scenario
+  result=0
+  TMPDIR="$work/ticket-tmp" /bin/bash -euo pipefail -c \
+    'source "$1"; nw_validate_ticket "$2"; : > "$TEST_OUTPUT_ROOT/signal-continued"' \
+    _ "$work/repository/scripts/lib/macos.sh" "$work/state/$installer_archive" \
+    > "$work/ticket-direct-$scenario.log" 2>&1 || result=$?
+  expected=130
+  [[ $scenario != term ]] || expected=143
+  [[ $result == "$expected" ]] || fail "Direct $scenario cancellation returned $result, expected $expected."
+  [[ ! -e $work/signal-continued && ! -e $work/ticket-backoff ]] || fail 'Cancelled helper reached continuation or retried.'
+  for path in "$work/ticket-tmp/"*; do
+    [[ ! -e $path ]] || fail 'Cancelled helper left private diagnostic scratch.'
   done
 done
 unset TEST_TICKET_TARGET TEST_TICKET_FAILURE
