@@ -45,10 +45,13 @@ load_durable() {
   if [[ $(jq length "$work/durable.json") == 1 ]]; then
     jq -e --arg sha "$sha" '.[0].draft == true and .[0].target_commitish == $sha' "$work/durable.json" >/dev/null || nw_fail 'Durable state belongs to a different source or was published.'
     durable=true
+    jq -e '.[0].assets | all(.[]; .name != "retired.json")' "$work/durable.json" >/dev/null || nw_fail 'Candidate was explicitly retired. Its immutable evidence remains; no recovery or new upload is permitted.'
   fi
 }
 # A new workflow run otherwise starts with no local receipt and could upload the
 # same candidate again. Even an early failed run requires explicit reconciliation.
+load_durable
+[[ $durable == false || -n ${RESUME_RUN_ID:-} ]] || nw_fail 'This candidate already has durable custody. Require explicit bound recovery, even if older workflow history was deleted.'
 gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/distribution.yml/runs?per_page=100" \
   --jq '.workflow_runs[]' | jq -s --arg build "$BUILD_RUN_ID" --argjson current "$GITHUB_RUN_NUMBER" \
   '[.[] | select(.display_title == ("Notary Watch distribution from CI " + $build))]

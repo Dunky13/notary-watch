@@ -7,6 +7,7 @@ trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/bin" "$work/repo/scripts/lib" "$work/repo/scripts/ci"
 cp "$root/scripts/ci/continue-release.sh" "$work/repo/scripts/ci/"
 cp "$root/scripts/lib/macos.sh" "$work/repo/scripts/lib/"
+cp "$root/scripts/lib/retirement.jq" "$work/repo/scripts/lib/"
 export PATH="$work/bin:$PATH" TEST_CONTINUATION_ROOT="$work" GH_REPO=fixture/repo
 cat > "$work/bin/gh" <<'STUB'
 #!/bin/bash
@@ -23,6 +24,7 @@ case $* in
   *'/attempts/1/jobs?'*) cat "$TEST_CONTINUATION_ROOT/jobs.json" ;;
   *'/actions/runs/200') cat "$TEST_CONTINUATION_ROOT/run.json" ;;
   *'/actions/runs/100') cat "$TEST_CONTINUATION_ROOT/build.json" ;;
+  *'/releases/assets/777') cat "$TEST_CONTINUATION_ROOT/retired.json" ;;
   *) printf 'Unexpected mocked GitHub endpoint: %s\n' "$*" >&2; exit 93 ;;
 esac
 STUB
@@ -62,6 +64,7 @@ reset_fixture() {
     {name:"Submit descriptive product-version-build-universal installer DMG",conclusion:"skipped"},
     {name:"Require DMG acceptance, staple, verify Finder copy, and finalize checksums",conclusion:"skipped"}]}' > "$work/jobs.json"
   jq -n '{schema:2,stage:"app",archive:"Notary-Watch-App-1.0.0-build.7-100-universal.zip",sha256:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",commit:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",version:"1.0.0",build:"7",architecture:"universal",ci_run_id:"100",id:"12345678-1234-1234-1234-123456789abc",operation:"wait",outcome:"pending",reason:"apple_pending",retryable:true,wait_attempts:1,execution_run_id:"200",execution_attempt:"1"}' > "$work/recovery.json"
+  jq -n '{schema:1,commit:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",ci_run_id:"100",execution_run_id:"200",reason:"notary_client_crash_no_uuid",retired_at:"2026-10-26T19:00:00Z"}' > "$work/retired.json"
 }
 change() {
   local file=$1 filter=$2
@@ -130,7 +133,20 @@ reset_fixture
 # Twelve total attempts are a hard automatic ceiling, even with valid state.
 jq -n 'range(1;13) | {id:(188 + .),run_number:.,status:"completed",conclusion:"failure",display_title:"Notary Watch distribution from CI 100"}' > "$work/runs.json"
 expect_alert
-[[ ! -e $work/restores ]] || fail 'Exhausted candidate loaded credentials/state.'
+[[ ! -e $work/restores ]] || fail 'Exhausted candidate restored checkpoint state.'
+reset_fixture
+change "$work/releases.json" '.assets += [{id:777,name:"retired.json"}]'
+expect_skip
+[[ ! -e $work/restores ]] || fail 'Retired candidate restored state.'
+# Retirement suppresses the exhausted alert only when bound to this latest run.
+jq -n 'range(1;13) | {id:(188 + .),run_number:.,status:"completed",conclusion:"failure",display_title:"Notary Watch distribution from CI 100"}' > "$work/runs.json"
+expect_skip
+for filter in '.execution_run_id = "199"' '.commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' '.ci_run_id = "101"' '.reason = "contains secret spaces"' '.retired_at = "2026-02-30T00:00:00Z"' '.unexpected = true'; do
+  reset_fixture
+  change "$work/releases.json" '.assets += [{id:777,name:"retired.json"}]'
+  change "$work/retired.json" "$filter"
+  expect_failure
+done
 for filter in '.head_branch = "feature"' '.head_repository.full_name = "foreign/repo"' '.run_attempt = 2' '.path = ".github/workflows/other.yml"'; do
   reset_fixture
   change "$work/run.json" "$filter"

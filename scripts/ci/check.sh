@@ -14,3 +14,4 @@ bash scripts/ci/test-dispatch.sh
 bash scripts/ci/test-release-output.sh
 bash scripts/ci/test-durable-state.sh
 bash scripts/ci/test-continuation.sh
+bash scripts/ci/test-retirement.sh

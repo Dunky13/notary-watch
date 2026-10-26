@@ -90,6 +90,9 @@ expect_failure() {
 }
 resolve
 grep -Fx 'artifact_id=101' "$GITHUB_OUTPUT" >/dev/null || fail 'First dispatch did not bind the successful CI artifact.'
+export TEST_DURABLE=true
+expect_failure 'Deleted workflow history allowed a fresh upload despite existing durable custody.'
+unset TEST_DURABLE
 export TEST_BUILD_ATTEMPT=2
 resolve
 grep -Fx 'artifact_id=99' "$GITHUB_OUTPUT" >/dev/null || fail 'A greater artifact ID overrode the successful CI attempt number.'

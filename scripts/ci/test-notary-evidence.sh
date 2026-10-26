@@ -17,6 +17,7 @@ cat > "$work/bin/xcrun" <<'STUB'
 #!/bin/bash
 set -euo pipefail
 [[ $1 == notarytool ]] || exit 91
+printf '%s\n' "${DEVELOPER_DIR:-default}" >> "$TEST_EVIDENCE_ROOT/client-selection"
 printf 'PRIVATE-CLIENT-OUTPUT\n' >&2
 case $2 in
   submit)
@@ -90,6 +91,10 @@ TEST_WAIT_MODE=malformed expect_failure wait_for
 expect_disposition wait_started false
 TEST_WAIT_STATUS='In Progress' expect_failure wait_for
 expect_disposition apple_pending true
+APPLE_NOTARY_DEVELOPER_DIR=/fixture/selected-notary-client wait_for > /dev/null
+[[ $(tail -1 "$work/client-selection") == /fixture/selected-notary-client ]] || fail 'Notarization did not use its explicitly selected client.'
+wait_for > /dev/null
+[[ $(tail -1 "$work/client-selection") == "${DEVELOPER_DIR:-default}" ]] || fail 'Notarization selection changed the caller toolchain.'
 # Resume exactly the same UUID after the pending response. No submit or new
 # archive is needed, and the retained wait count records repeated observation.
 attempts=$(jq -r '.wait_attempts' "$work/state/app.recovery.json")

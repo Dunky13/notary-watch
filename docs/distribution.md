@@ -1,6 +1,6 @@
 # macOS distribution
 
-Notary Watch targets macOS 14 and later. The distribution build contains Apple Silicon and Intel slices in one app. CI explicitly selects the qualified Xcode 16.4 installation before builds or notarization. All CI jobs use macOS runners; there are no Linux or Windows build targets.
+Notary Watch targets macOS 14 and later. The distribution build contains Apple Silicon and Intel slices in one app. Builds remain on qualified Xcode 16.4. The notarization client is separately pinned to Xcode 26.3 because the first real hosted 16.4 upload trapped before returning a UUID. Credential-free CI verifies both selections; signing preflight repeats that check before credentials. No fallback or rebuild accompanies client selection. All CI jobs use macOS runners; there are no Linux or Windows build targets.
 
 ## Production entry point
 
@@ -120,6 +120,8 @@ The controller runs after Distribution completion and every fifteen minutes. It 
 Checkpoints are selected by attempted stage and execution lineage, never opaque artifact-ID magnitude. Stage completion snapshots take precedence; if a runner dies during a submit/wait stage, only the matching inline intent/UUID snapshot from that same distribution attempt may substitute. An intent is durably verified before upload begins. UUID custody is verified immediately after capture. If upload completes but the UUID never reaches durable storage, recovery retains the intent and refuses another upload; reconcile Apple history before proceeding. There is no claim of atomicity between Apple and GitHub.
 
 A finite wait does not cancel Apple's request. Continuation queries the retained UUID and original signed bytes. It cannot create a fresh upload just because a client timed out. New dispatches independently recheck latest-run ordering under the original-build concurrency lock. Missing latest-stage custody fails closed, rather than restoring an older attempt. The original CI attempt is also checked after ordinary artifacts expire.
+
+An exceptional failed candidate may be retired with `scripts/ci/retire-candidate.sh` using a bound record containing schema, commit, original CI run, failed distribution execution, machine-readable reason and UTC retirement time. This verifies the completed failed main Distribution and writes an immutable `retired.json` in its existing private custody draft. Retirement preserves every byte and receipt; it authorizes no retry, acceptance or publication. The controller validates retirement against the latest failed execution before stopping alerts, and the resolver refuses further candidate use. Do not delete an upload intent to clear a failure.
 
 DMG creation retries at most three times and only when the complete error is exactly `hdiutil: create failed - Resource busy`. Stapling retries at most three times for ticket-service errors 65 or 68. Other errors fail immediately. Each notary wait is bounded, and the outer signing job has a 90-minute limit. None of these limits promises Apple's turnaround time.
 
