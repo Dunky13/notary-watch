@@ -85,13 +85,16 @@ fi
 recovery=
 recovery_slot=
 final_available=false
+bootstrap_resume=false
 if [[ -n ${RESUME_RUN_ID:-} ]]; then
   validate_run "$RESUME_RUN_ID" '.github/workflows/distribution.yml'
   jq -e --arg build "$BUILD_RUN_ID" \
     '(.event == "workflow_dispatch" or .event == "workflow_run") and .status == "completed" and .run_attempt == 1 and .display_title == ("Notary Watch distribution from CI " + $build)' \
     "$work/run.json" >/dev/null || nw_fail 'Recovery must come from the completed automatic or manual distribution run for this candidate.'
   load_durable
-  if [[ $durable == true ]] && jq -e '.[0].assets | any(.[]; .name == "final.tar" or .name == "final.tar.sha256")' "$work/durable.json" >/dev/null; then
+  if [[ $durable == false ]] && "$NW_ROOT/scripts/ci/verify-unstarted.sh" "$work/prior-runs.json" "$GITHUB_REPOSITORY" "$BUILD_RUN_ID" > "$work/unstarted-proof.log" 2>&1; then
+    bootstrap_resume=true
+  elif [[ $durable == true ]] && jq -e '.[0].assets | any(.[]; .name == "final.tar" or .name == "final.tar.sha256")' "$work/durable.json" >/dev/null; then
     jq -e '.[0].assets | ([.[] | select(.name == "final.tar")] | length == 1) and ([.[] | select(.name == "final.tar.sha256")] | length == 1)' "$work/durable.json" >/dev/null || nw_fail 'Final candidate custody is incomplete; do not regenerate different download bytes.'
     final_available=true
   else
@@ -156,3 +159,4 @@ printf 'sha=%s\nrun_number=%s\nartifact_id=%s\n' "$sha" "$number" "$artifact" >>
 if [[ -n $recovery ]]; then printf 'recovery_artifact_id=%s\n' "$recovery" >> "$GITHUB_OUTPUT"; fi
 if [[ -n $recovery_slot ]]; then printf 'recovery_slot=%s\n' "$recovery_slot" >> "$GITHUB_OUTPUT"; fi
 printf 'durable_source=%s\nfinal_available=%s\nbuild_attempt=%s\n' "$durable_source" "$final_available" "$build_attempt" >> "$GITHUB_OUTPUT"
+printf 'bootstrap_resume=%s\n' "$bootstrap_resume" >> "$GITHUB_OUTPUT"

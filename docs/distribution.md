@@ -1,6 +1,6 @@
 # macOS distribution
 
-Notary Watch targets macOS 14 and later. The distribution build contains Apple Silicon and Intel slices in one app. Builds remain on qualified Xcode 16.4. The notarization client is separately pinned to Xcode 26.3 because the first real hosted 16.4 upload trapped before returning a UUID. Credential-free CI verifies both selections; signing preflight repeats that check before credentials. No fallback or rebuild accompanies client selection. All CI jobs use macOS runners; there are no Linux or Windows build targets.
+Notary Watch targets macOS 14 and later. The distribution build contains Apple Silicon and Intel slices in one app. Builds remain on qualified Xcode 16.4. The notarization client is separately pinned to Xcode 26.3 because the first real hosted 16.4 upload trapped before returning a UUID. Credential-free CI verifies both selections; signing preflight repeats that check before credentials. No fallback or rebuild accompanies client selection. Builds, signing and native acceptance use macOS. API-only source verification, continuation and the CI aggregate use hosted Ubuntu; there are no Linux or Windows product builds.
 
 ## Production entry point
 
@@ -47,7 +47,8 @@ The verifier checks the disk image, Applications symlink, app signature, bundle 
 1. Swift formatting, ShellCheck, shell syntax, Actionlint, app metadata, and offline release regressions.
 2. The Swift test suite on `macos-15` (Apple Silicon) and `macos-15-intel`.
 3. A universal release build, development ZIP and DMG, mounted-image and copy verification, and sample-mode app startup.
-4. `ci-required`, which fails if any required job fails or is skipped.
+4. Credential-free orchestration and native-tar receipt restoration checks on Ubuntu.
+5. `ci-required`, which fails if any native or orchestration validation job fails or is skipped.
 
 The immutable unsigned artifact is named `Notary-Watch-unsigned-<CI run ID>-a<attempt>`. It contains the packages, checksums, and `build-metadata.json`, which binds the app archive to its commit, run, version, build number, architecture, and SHA-256. CI has read-only repository permissions and does not receive Apple credentials. Artifact retention is 30 days.
 
@@ -116,6 +117,8 @@ An initial credential-free checkpoint permits recovery from import failures. Saf
 The private draft `notary-state-ci-<original CI run>` retains the original credential-free build (`source.tar`), each stage snapshot, pre-upload intent, immediate UUID receipt, and the exact final downloads (`final.tar`). Every archive has its own checksum companion, downloads use exact asset IDs, and existing bytes are compared instead of overwritten. The draft is bound to the original source and is never published. Ordinary workflow artifacts remain a convenient 30-day copy; durable custody has no automatic artifact expiration. Do not delete recovery drafts for active or published candidates without a separate retention decision.
 
 The controller runs after Distribution completion and every fifteen minutes. It considers only the latest completed failed/timed-out attempt of each candidate, validates its successful same-repository main-push CI, and permits at most twelve distribution attempts. Only a bound UUID with a current-execution pending/diagnosed-transport classification can automatically resume Apple observation. Finalized downloads can resume fresh acceptance/publication without signing or repacking. Terminal rejection, contradictory/malformed evidence, missing UUIDs, ambiguous custody and exhausted attempts require operator investigation. Cancellation is not automatically undone.
+
+If GitHub cannot acquire a runner before the workflow starts, no checkpoint can exist. The controller may start the same pinned candidate only when every retained execution has affirmative API evidence of no runner, no steps, a failed source job and a skipped signing job. The resolver independently repeats that complete-lineage proof before initializing state. An earlier executed attempt, missing/malformed evidence, rerun, manual cancellation or existing custody prevents this exception. It never clears an upload intent or rebuilds the original CI artifact. API-only orchestration uses Ubuntu so it does not consume the scarce Mac runners required for signing and native acceptance.
 
 Checkpoints are selected by attempted stage and execution lineage, never opaque artifact-ID magnitude. Stage completion snapshots take precedence; if a runner dies during a submit/wait stage, only the matching inline intent/UUID snapshot from that same distribution attempt may substitute. An intent is durably verified before upload begins. UUID custody is verified immediately after capture. If upload completes but the UUID never reaches durable storage, recovery retains the intent and refuses another upload; reconcile Apple history before proceeding. There is no claim of atomicity between Apple and GitHub.
 
