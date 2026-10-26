@@ -1,0 +1,80 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  lint:
+    name: Swift, shell, workflow, and release regression checks
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install workflow and shell checkers
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: brew install actionlint shellcheck jq
+      - run: scripts/ci/check.sh
+  tests:
+    name: Native tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record Apple toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - run: swift test -j 2
+  package:
+    name: Universal drag-and-drop installer
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build Apple Silicon and Intel slices, then combine
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/build-app.sh --universal
+      - name: Package development ZIP and DMG
+        run: scripts/package-macos.sh
+      - name: Verify image, Applications shortcut, app signature, and installed copy
+        run: scripts/verify-macos.sh dist/packages/*-development.dmg development
+      - name: Smoke-test the packaged app
+        run: scripts/ci/smoke-app.sh 'dist/Notary Watch.app'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Notary-Watch-unsigned-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: dist/packages/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+  ci-required:
+    name: ci-required
+    needs: [lint, tests, package]
+    if: always()
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - name: Require every macOS validation job
+        env:
+          LINT: ${{ needs.lint.result }}
+          TESTS: ${{ needs.tests.result }}
+          PACKAGE: ${{ needs.package.result }}
+        run: '[[ "$LINT" == success && "$TESTS" == success && "$PACKAGE" == success ]]'

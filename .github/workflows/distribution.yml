@@ -1,0 +1,189 @@
+name: Distribution
+run-name: Notary Watch distribution from CI ${{ inputs.build_run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful main-push CI run ID (not a distribution run ID).
+        required: true
+        type: string
+      resume_run_id:
+        description: Previous distribution run containing this build's checkpoint (optional).
+        required: false
+        type: string
+      publish_release:
+        description: Publish a GitHub prerelease after signed acceptance on both Mac architectures.
+        default: false
+        type: boolean
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: distribution-${{ inputs.build_run_id }}
+  cancel-in-progress: false
+jobs:
+  source:
+    name: Verify original successful main CI artifact
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      run_number: ${{ steps.source.outputs.run_number }}
+      artifact_id: ${{ steps.source.outputs.artifact_id }}
+      recovery_artifact_id: ${{ steps.source.outputs.recovery_artifact_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+        run: scripts/ci/resolve-build.sh
+  notarize:
+    name: Sign app and notarize named app ZIP and installer DMG
+    needs: source
+    runs-on: macos-15
+    timeout-minutes: 90
+    # Configure main-only deployment rules and required reviewers on this environment.
+    environment: apple-signing
+    env:
+      BUILD_SHA: ${{ needs.source.outputs.sha }}
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      APPLE_NOTARY_KEY_ID: ${{ vars.APPLE_NOTARY_KEY_ID }}
+      APPLE_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARY_ISSUER_ID }}
+      APPLE_NOTARY_TIMEOUT: ${{ vars.APPLE_NOTARY_TIMEOUT || '10m' }}
+    outputs:
+      team_id: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the pinned original CI artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.source.outputs.artifact_id }}
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: original-build
+          merge-multiple: true
+      - name: Restore previous exact signed bytes and submission IDs
+        if: inputs.resume_run_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.source.outputs.recovery_artifact_id }}
+          run-id: ${{ inputs.resume_run_id }}
+          github-token: ${{ github.token }}
+          path: notary-state
+          merge-multiple: true
+      - name: Prepare a signed universal app without rebuilding it
+        uses: ./.github/actions/notarization-stage
+        with:
+          operation: prepare
+          slot: '00'
+          build-run-id: ${{ inputs.build_run_id }}
+          certificate: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          certificate-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          notary-key: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+      - name: Submit Notary-Watch-App-version-universal.zip
+        uses: ./.github/actions/notarization-stage
+        with:
+          operation: submit-app
+          slot: '10'
+          build-run-id: ${{ inputs.build_run_id }}
+          certificate: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          certificate-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          notary-key: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+      - name: Require app acceptance, fetch its log, staple, and prepare the DMG
+        uses: ./.github/actions/notarization-stage
+        with:
+          operation: finish-app
+          slot: '20'
+          build-run-id: ${{ inputs.build_run_id }}
+          certificate: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          certificate-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          notary-key: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+      - name: Submit Notary-Watch-Installer-version-universal.dmg
+        uses: ./.github/actions/notarization-stage
+        with:
+          operation: submit-installer
+          slot: '30'
+          build-run-id: ${{ inputs.build_run_id }}
+          certificate: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          certificate-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          notary-key: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+      - name: Require DMG acceptance, staple, verify Finder copy, and finalize checksums
+        uses: ./.github/actions/notarization-stage
+        with:
+          operation: finish-installer
+          slot: '40'
+          build-run-id: ${{ inputs.build_run_id }}
+          certificate: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          certificate-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          notary-key: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+      - name: Retain only complete signed distribution assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Notary-Watch-signed-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: signed-release/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+  acceptance:
+    name: Signed installer acceptance (${{ matrix.os }})
+    needs: [source, notarize]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      APPLE_TEAM_ID: ${{ needs.notarize.outputs.team_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Notary-Watch-signed-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: signed-release
+      - name: Verify checksums, Developer ID, tickets, Gatekeeper, and installed copy
+        run: |
+          (cd signed-release && shasum -a 256 -c SHA256SUMS)
+          scripts/verify-macos.sh signed-release/*.dmg release
+          mkdir installed
+          ditto -x -k signed-release/*.zip installed
+          scripts/ci/smoke-app.sh 'installed/Notary Watch.app'
+  publish:
+    name: Publish verified macOS prerelease
+    if: inputs.publish_release
+    needs: [source, notarize, acceptance]
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Notary-Watch-signed-${{ github.run_id }}-a${{ github.run_attempt }}
+          path: signed-release
+      - name: Publish the exact accepted assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ needs.source.outputs.sha }}
+          BUILD_NUMBER: ${{ needs.source.outputs.run_number }}
+          SOURCE_RUN: ${{ inputs.build_run_id }}
+        run: |
+          (cd signed-release && shasum -a 256 -c SHA256SUMS)
+          version=$(jq -er '.version' signed-release/release-manifest.json)
+          tag="build-$BUILD_NUMBER-${BUILD_SHA:0:7}"
+          printf 'Signed and notarized universal macOS app and drag-and-drop installer.\n\nSource CI: https://github.com/%s/actions/runs/%s\n' "$GH_REPO" "$SOURCE_RUN" > release-notes.md
+          gh release create "$tag" signed-release/* --target "$BUILD_SHA" --prerelease \
+            --title "Notary Watch $version (build $BUILD_NUMBER)" --notes-file release-notes.md

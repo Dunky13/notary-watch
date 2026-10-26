@@ -1,0 +1,16 @@
+Install Notary Watch
+
+1. Drag Notary Watch.app onto the Applications shortcut.
+2. Eject this disk image.
+3. Open Notary Watch from Applications.
+4. Follow the setup guide to connect your Apple notarization profiles.
+
+If updating, quit Notary Watch before copying and choose Replace in Finder.
+
+Requires macOS 14 or later and Xcode's notarytool for Apple account access.
+The app supports both Apple Silicon and Intel Macs in universal builds.
+
+Development downloads use a local ad hoc signature. Public signed downloads
+are produced separately with Developer ID signing and Apple notarization.
+
+Removing a saved profile from Notary Watch leaves its credentials in Keychain.

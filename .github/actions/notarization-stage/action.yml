@@ -1,0 +1,41 @@
+name: Checkpointed Apple notarization stage
+description: Run trusted signing automation, then retain exact public archives and receipts.
+inputs:
+  operation:
+    description: Fixed release operation chosen by this repository's workflow.
+    required: true
+  slot:
+    description: Checkpoint order.
+    required: true
+  build-run-id:
+    description: Original successful main CI run.
+    required: true
+  certificate:
+    description: Password-protected Developer ID identity, base64 encoded.
+    required: true
+  certificate-password:
+    description: Certificate export password.
+    required: true
+  notary-key:
+    description: App Store Connect team API private key.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Run signed operation in a temporary Keychain
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+        APPLE_DEVELOPER_ID_P12_BASE64: ${{ inputs.certificate }}
+        APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ inputs.certificate-password }}
+        APPLE_NOTARY_KEY_P8: ${{ inputs.notary-key }}
+      run: scripts/with-apple-signing.sh scripts/release-macos.sh "$OPERATION" original-build notary-state signed-release
+    - name: Preserve submission IDs and exact signed archives
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: Notary-Watch-state-${{ inputs.build-run-id }}-r${{ github.run_id }}-a${{ github.run_attempt }}-s${{ inputs.slot }}
+        path: notary-state/
+        if-no-files-found: warn
+        retention-days: 30
+        compression-level: 0
