@@ -37,14 +37,19 @@ while IFS= read -r candidate; do
   BUILD_RUN_ID=$build
   export BUILD_SHA BUILD_RUN_ID
   jq --arg tag "notary-state-ci-$build" '[.[] | select(.tag_name == $tag)]' "$work/releases.json" > "$work/drafts.json"
-  if [[ $(jq length "$work/drafts.json") == 0 ]]; then
+  safe_initial_custody=false
+  if [[ $(jq length "$work/drafts.json") == 0 ]] || jq -e 'length == 1 and .[0].draft == true and .[0].prerelease == true and (.[0].assets | all(.[]; .name | test("^(source\\.tar(\\.sha256)?|state-r[1-9][0-9]*-s00\\.tar(\\.sha256)?)$")))' "$work/drafts.json" >/dev/null; then safe_initial_custody=true; fi
+  if [[ $safe_initial_custody == true ]]; then
+    if [[ $(jq length "$work/drafts.json") != 0 ]]; then
+      jq -e --arg sha "$BUILD_SHA" '.[0].target_commitish == $sha' "$work/drafts.json" >/dev/null || nw_fail 'Initial custody belongs to another source.'
+    fi
     jq '.runs' "$work/candidate.json" > "$work/lineage.json"
     if "$NW_ROOT/scripts/ci/verify-unstarted.sh" "$work/lineage.json" "$GH_REPO" "$build" > "$work/unstarted-proof.log" 2>&1; then
       if ((attempts >= 12)); then printf '::error::Candidate exhausted twelve automatic attempts: %s. Operator investigation required.\n' "$run"; blocked=true; continue; fi
       queue_resume "$build" "$run"
       exit 0
     fi
-    # No empty-state retry is permitted for legacy or ambiguous executions.
+    # No initial-state retry is permitted for legacy or ambiguous executions.
     printf 'Candidate CI %s has no durable custody or complete no-execution proof; held.\n' "$build"
     continue
   fi

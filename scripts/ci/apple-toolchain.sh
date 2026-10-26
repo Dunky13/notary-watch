@@ -18,4 +18,5 @@ if [[ -n ${APPLE_NOTARY_DEVELOPER_DIR:-} ]]; then
   printf 'Notarization client: %s\n' "$notary_version"
   DEVELOPER_DIR="$APPLE_NOTARY_DEVELOPER_DIR" xcrun notarytool --version
   DEVELOPER_DIR="$APPLE_NOTARY_DEVELOPER_DIR" xcrun notarytool submit --help > /dev/null
+  DEVELOPER_DIR="$APPLE_NOTARY_DEVELOPER_DIR" xcrun notarytool info --help > /dev/null
 fi

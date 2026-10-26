@@ -97,7 +97,16 @@ for stage in app installer; do
   done
   file="$state/$stage.status.json"
   if [[ -f $file && ! -L $file ]]; then
-    jq '{id,status,wait_exit}' "$file" > "$work/$stage.status.json"
+    jq -e '
+      select(type == "object")
+      | select(.id | type == "string" and test("^[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$"))
+      | select(.status == "Unknown" or .status == "Accepted" or .status == "Invalid" or .status == "Rejected" or .status == "In Progress")
+      | select(.wait_exit | type == "number" and . >= 0 and . <= 255 and . == floor)
+      | if has("observation_source") or has("observation_exit") then
+          select(.observation_source == "info")
+          | select(.observation_exit | type == "number" and . >= 0 and . <= 255 and . == floor)
+          | {id,status,wait_exit,observation_source,observation_exit}
+        else {id,status,wait_exit} end' "$file" > "$work/$stage.status.json" || nw_fail 'Checkpoint observation metadata is malformed.'
   fi
   file="$state/$stage.log.json"
   if [[ -f $file && ! -L $file ]]; then

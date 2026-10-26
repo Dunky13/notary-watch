@@ -58,8 +58,9 @@ expect_hold() {
   [[ ! -e $work/dispatched.json ]] || fail 'Controller restarted a potentially executed candidate.'
 }
 expect_dispatch() {
+  local expected_bootstrap=${1:-true}
   resolve || { cat "$work/resolve.log" >&2; fail 'Proven unstarted candidate was not recoverable.'; }
-  grep -Fx 'bootstrap_resume=true' "$work/output" > /dev/null || fail 'No-state recovery was not explicitly identified.'
+  grep -Fx "bootstrap_resume=$expected_bootstrap" "$work/output" > /dev/null || fail 'Recovery discarded a state checkpoint or lacked a proven initial state.'
   grep -Fx 'artifact_id=101' "$work/output" > /dev/null || fail 'Recovery changed the original CI artifact.'
   controller || { cat "$work/controller.log" >&2; fail 'Controller did not resume a proven unstarted candidate.'; }
   jq -e '.build_run_id == "100" and .resume_run_id == "200"' "$work/dispatched.json" > /dev/null || fail 'Controller changed candidate lineage.'
@@ -67,18 +68,41 @@ expect_dispatch() {
 reset_fixture
 expect_dispatch
 for filter in \
-  '.[0].steps = [{name:"Checkout",status:"completed",conclusion:"success"}]' \
   '.[1].steps = [{name:"Submit",status:"completed",conclusion:"failure"}]' \
-  '.[0].runner_id = 42' \
   '.[1].runner_name = "assigned-runner"' \
   '.[1] |= del(.runner_id)' \
-  '.[1].conclusion = "failure"' \
-  '.[0].conclusion = "success"' \
   '. += [.[1]]'; do
   reset_fixture
   change "$work/jobs.json" "$filter"
   expect_hold
 done
+for filter in \
+  '.[0].steps = [{name:"Read source",status:"completed",conclusion:"success"}] | .[0].conclusion = "success" | .[0].runner_id = 42' \
+  '.[1].conclusion = "failure"'; do
+  reset_fixture
+  change "$work/jobs.json" "$filter"
+  expect_dispatch
+done
+reset_fixture
+change "$work/jobs.json" '.[0].conclusion = "success" | .[0].runner_id = 42 | .[0].runner_name = "source-runner" | .[0].steps = [{name:"Read source",conclusion:"success",status:"completed"}]
+  | .[1].conclusion = "failure" | .[1].runner_id = 43 | .[1].runner_name = "signing-runner"
+  | .[1].steps = (["Prepare a signed universal app without rebuilding it","Submit descriptive product-version-build-universal app ZIP","Require app acceptance, fetch its log, staple, and prepare the DMG","Submit descriptive product-version-build-universal installer DMG","Require DMG acceptance, staple, verify Finder copy, and finalize checksums"] | map({name:.,status:"completed",conclusion:"skipped"}))
+  | .[1].steps += [{name:"Initialize candidate",status:"completed",conclusion:"success"},{name:"Save initial custody",status:"completed",conclusion:"failure"}]'
+cp "$work/jobs.json" "$work/presigning-jobs.json"
+expect_dispatch
+reset_fixture
+cp "$work/presigning-jobs.json" "$work/jobs.json"
+jq -n '{tag_name:"notary-state-ci-100",target_commitish:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",draft:true,prerelease:true,assets:[]}' > "$work/releases.json"
+expect_dispatch
+reset_fixture
+cp "$work/presigning-jobs.json" "$work/jobs.json"
+jq -n '{tag_name:"notary-state-ci-100",target_commitish:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",draft:true,prerelease:true,assets:[{name:"source.tar"},{name:"source.tar.sha256"},{name:"state-r200-s00.tar"},{name:"state-r200-s00.tar.sha256"}]}' > "$work/releases.json"
+expect_dispatch false
+grep -Fx 'recovery_slot=00' "$work/output" > /dev/null || fail 'Slot00 recovery could discard an inherited submission UUID.'
+reset_fixture
+cp "$work/presigning-jobs.json" "$work/jobs.json"
+change "$work/jobs.json" '.[1].steps[0].conclusion = "failure"'
+expect_hold
 for filter in '.path = ".github/workflows/other.yml"' '.head_repository.full_name = "foreign/repo"' '.run_attempt = 2'; do
   reset_fixture
   change "$work/run-template.json" "$filter"
@@ -94,7 +118,7 @@ rm "$work/dispatched.json"
 change "$work/older-jobs.json" '.[1].runner_id = 42 | .[1].conclusion = "failure" | .[1].steps = [{name:"Submit",conclusion:"failure"}]'
 expect_hold
 reset_fixture
-jq -n '{tag_name:"notary-state-ci-100",target_commitish:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",draft:true,prerelease:true,assets:[]}' > "$work/releases.json"
+jq -n '{tag_name:"notary-state-ci-100",target_commitish:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",draft:true,prerelease:true,assets:[{name:"state-r150-s05.tar"}]}' > "$work/releases.json"
 expect_hold
 reset_fixture
 for id in $(seq 201 211); do

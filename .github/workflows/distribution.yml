@@ -25,6 +25,11 @@ on:
         description: Previous distribution run containing this build's checkpoint (optional).
         required: false
         type: string
+      checkpoint_probe:
+        description: Qualification only, stop after a new real submission UUID reaches durable custody.
+        type: choice
+        default: none
+        options: [none, app, installer]
 env:
   DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 permissions:
@@ -46,6 +51,10 @@ jobs:
         github.event.workflow_run.status == 'completed' &&
         github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-24.04
+    environment: production-release
+    permissions:
+      contents: write # GitHub requires push access to read private draft custody.
+      actions: read
     timeout-minutes: 10
     outputs:
       sha: ${{ steps.source.outputs.sha }}
@@ -96,6 +105,7 @@ jobs:
       APPLE_NOTARY_KEY_ID: ${{ vars.APPLE_NOTARY_KEY_ID }}
       APPLE_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARY_ISSUER_ID }}
       APPLE_NOTARY_TIMEOUT: ${{ vars.APPLE_NOTARY_TIMEOUT || '10m' }}
+      NW_RELEASE_PROBE: ${{ inputs.checkpoint_probe || 'none' }}
     outputs:
       team_id: ${{ vars.APPLE_TEAM_ID }}
     steps:
@@ -139,13 +149,6 @@ jobs:
         run: |
           scripts/release-macos.sh initialize original-build notary-state signed-release
           scripts/checkpoint-macos.sh notary-state safe-checkpoints/initial
-      - name: Retain original build and initial state beyond artifact expiry
-        if: needs.source.outputs.final_available != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          scripts/ci/durable-state.sh save-source original-build
-          scripts/ci/durable-state.sh save safe-checkpoints/initial 00
       - name: Preserve the credential-free initial recovery checkpoint
         if: needs.source.outputs.final_available != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -155,6 +158,16 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+      - name: Retain the original build beyond artifact expiry
+        if: needs.source.outputs.final_available != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/durable-state.sh save-source original-build
+      - name: Retain the initial checkpoint beyond artifact expiry
+        if: needs.source.outputs.final_available != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/durable-state.sh save safe-checkpoints/initial 00
       - name: Restore exact finalized downloads for acceptance and publication recovery
         if: needs.source.outputs.final_available == 'true'
         env:

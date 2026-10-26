@@ -8,6 +8,9 @@ source "$(dirname -- "$0")/lib/macos.sh"
 operation=$1 stage=$2 archive=$3 state=$4
 [[ $operation == submit || $operation == wait ]] || nw_fail 'Invalid notarization operation.'
 [[ $stage == app || $stage == installer ]] || nw_fail 'Invalid notarization stage.'
+probe=${NW_RELEASE_PROBE:-none}
+[[ $probe == none || $probe == app || $probe == installer ]] || nw_fail 'Invalid receipt-custody qualification probe.'
+[[ $probe == none || ${NW_DURABLE_EVENTS:-false} == true ]] || nw_fail 'A qualification stop requires synchronous durable UUID custody.'
 [[ -f $archive ]] || nw_fail 'Submission archive is missing.'
 [[ ${BUILD_SHA:-} =~ ^[a-f0-9]{40}$ && ${BUILD_RUN_ID:-} =~ ^[1-9][0-9]*$ ]] || nw_fail 'Source commit and CI run are required for a notarization receipt.'
 nw_validate_version "${RELEASE_VERSION:-}"
@@ -81,12 +84,58 @@ disposition() {
     "$prefix.context.tmp" > "$prefix.recovery.json.tmp"
   mv "$prefix.recovery.json.tmp" "$prefix.recovery.json"
 }
+authentication_failure() {
+  grep -Eiq 'HTTP[ /:]+(401|403)|unauthorized|forbidden|invalid credentials' "$1"
+}
 transport_failure() {
   # Retry only diagnosed URL transport failures. Authentication, arbitrary
   # stderr, malformed JSON and mismatched evidence remain terminal.
   local file=$1
-  ! grep -Eiq 'HTTP[ /:]+(401|403)|unauthorized|forbidden|invalid credentials' "$file" &&
+  ! authentication_failure "$file" &&
     grep -Eq 'NSURLErrorDomain Code=-(1001|1005|1009)([^0-9]|$)|The request timed out\.|The network connection was lost\.' "$file"
+}
+observe_info() (
+  # info has no native --timeout. Isolate the observer and watchdog in job
+  # groups so expiry/cancellation also reaps their children, including xcrun.
+  set -m
+  observer='' watchdog=''
+  stop_observers() {
+    local pid
+    for pid in "$observer" "$watchdog"; do
+      if [[ -n $pid ]]; then
+        kill -KILL -- "-$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+      fi
+    done
+  }
+  trap 'stop_observers' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  rm -f -- "$raw.info.timeout"
+  nw_notarytool info "$submission" "${auth[@]}" --output-format json --no-progress &
+  observer=$!
+  ( sleep 30; : > "$raw.info.timeout"; kill -KILL -- "-$observer" 2>/dev/null || true ) &
+  watchdog=$!
+  result=0
+  wait "$observer" || result=$?
+  [[ ! -e $raw.info.timeout ]] || result=124
+  stop_observers
+  trap - EXIT
+  exit "$result"
+)
+valid_observation() {
+  local file=$1 require_id=$2
+  # A single typed response only. info must explicitly identify this UUID;
+  # older wait clients may omit id. Compare every supplied artifact binding.
+  jq -se --arg id "$submission" --arg name "$name" --arg digest "$digest" --argjson require_id "$require_id" '
+    length == 1 and (.[0] | type == "object"
+      and (.status == "Accepted" or .status == "Invalid" or .status == "Rejected" or .status == "In Progress")
+      and (if $require_id or has("id") then
+        (.id | type == "string" and ascii_downcase == ($id | ascii_downcase)) else true end)
+      and (if has("name") then (.name | type == "string" and . == $name) else true end)
+      and (if has("archiveFilename") then (.archiveFilename | type == "string" and . == $name) else true end)
+      and (if has("sha256") then (.sha256 | type == "string" and ascii_downcase == $digest) else true end))' \
+    "$file" >/dev/null 2>&1
 }
 persist_event() {
   # Fixed trusted repository code, never an artifact-supplied command. Durable
@@ -130,6 +179,10 @@ if [[ $operation == submit ]]; then
     disposition submitted upload_returned_uuid true
     persist_event receipt
     printf 'Apple submission: %s, stage: %s, archive: %s.\n' "$submission" "$stage" "$name"
+    if [[ $probe == "$stage" ]]; then
+      printf 'Qualification stop after real UUID %s reached durable custody. Continue this candidate; do not upload again.\n' "$submission" >&2
+      exit 75
+    fi
   else
     disposition ambiguous reconcile_upload false
     nw_fail 'Upload returned no valid submission ID. The safe intent was retained; reconcile Apple history before retrying.'
@@ -149,16 +202,38 @@ disposition failed wait_started false
 wait_result=0
 nw_notarytool wait "$submission" "${auth[@]}" --timeout "$notary_timeout" --output-format json --no-progress \
   > "$raw.status.json" 2> "$raw.wait.stderr" || wait_result=$?
-status=$(jq -r '.status | select(. == "Accepted" or . == "Invalid" or . == "Rejected" or . == "In Progress")' "$raw.status.json" 2>/dev/null) || status=
-[[ -n $status ]] || status=Unknown
-jq -n --arg id "$submission" --arg status "$status" --argjson exit "$wait_result" \
-  '{id:$id,status:$status,wait_exit:$exit}' > "$prefix.status.json"
-# Reject a mismatched wait response even when a later log would look valid.
-if [[ $status == Unknown && $wait_result != 0 && ! -s $raw.status.json ]] && transport_failure "$raw.wait.stderr"; then
-  disposition pending wait_transport true
-  nw_fail 'Notarization wait had a diagnosed transport failure. Resume the recorded UUID.'
+status=Unknown observation_source=wait observation_result=$wait_result
+save_status() {
+  jq -n --arg id "$submission" --arg status "$status" --argjson exit "$wait_result" \
+    --arg source "$observation_source" --argjson observation_exit "$observation_result" \
+    '{id:$id,status:$status,wait_exit:$exit}
+     + (if $source == "info" then {observation_source:$source,observation_exit:$observation_exit} else {} end)' > "$prefix.status.json"
+}
+save_status
+if [[ $wait_result != 0 && ! -s $raw.status.json ]]; then
+  # An empty timeout/disconnect says nothing about Apple state. Query only the
+  # UUID already in custody; contradictory nonempty waits never reach this path.
+  if authentication_failure "$raw.wait.stderr"; then
+    nw_fail 'Notarization wait authentication failed.'
+  fi
+  observation_source=info observation_result=0
+  observe_info > "$raw.info.json" 2> "$raw.info.stderr" || observation_result=$?
+  save_status
+  if authentication_failure "$raw.info.stderr"; then
+    nw_fail 'Notarization info authentication failed.'
+  fi
+  if [[ $observation_result != 0 && ! -s $raw.info.json ]] && transport_failure "$raw.info.stderr"; then
+    disposition pending wait_transport true
+    nw_fail 'Notarization observation had a diagnosed transport failure. Resume the recorded UUID.'
+  fi
+  [[ $observation_result == 0 ]] || nw_fail 'Notarization info observation failed. The original wait exit was retained.'
+  valid_observation "$raw.info.json" true || nw_fail 'Info response does not match the recorded submission, filename, or submitted digest.'
+  status=$(jq -r '.status' "$raw.info.json")
+else
+  valid_observation "$raw.status.json" false || nw_fail 'Wait response does not match the recorded submission, filename, or submitted digest.'
+  status=$(jq -r '.status' "$raw.status.json")
 fi
-jq -e --arg id "$submission" 'type == "object" and ((.id == null) or ((.id | ascii_downcase) == ($id | ascii_downcase)))' "$raw.status.json" >/dev/null 2>&1 || nw_fail 'Wait response does not match the recorded submission.'
+save_status
 case $status in
   'In Progress') disposition pending apple_pending true ;;
   Invalid|Rejected) disposition rejected apple_rejected false ;;
@@ -170,6 +245,7 @@ case $status in
     nw_notarytool log "$submission" "${auth[@]}" "$raw.log.json" > "$raw.log.stdout" 2> "$raw.log.stderr" || log_result=$?
     # Upload only documented diagnostic fields, never arbitrary client output.
     if [[ $log_result == 0 && -s $raw.log.json ]]; then
+      jq -se 'length == 1 and (.[0] | type == "object")' "$raw.log.json" >/dev/null 2>&1 || nw_fail 'Apple returned malformed diagnostic evidence.'
       jq -e -f "$NW_ROOT/scripts/lib/notary-log.jq" "$raw.log.json" > "$prefix.log.json.tmp" 2>/dev/null || nw_fail 'Apple returned malformed diagnostic evidence.'
       mv "$prefix.log.json.tmp" "$prefix.log.json"
     fi
@@ -178,17 +254,17 @@ esac
 # Contradictory diagnostics remain terminal even if the wait client also had a
 # transport failure. Never classify a returned mismatched log as retryable.
 if [[ $status == Accepted && $log_result == 0 && -s $prefix.log.json ]]; then
-  jq -e --arg id "$submission" --arg name "$name" --arg digest "$digest" \
+  jq -e --arg id "$submission" --arg name "$name" --arg digest "$digest" --arg source "$observation_source" \
     '.status == "Accepted" and (.jobId | ascii_downcase) == ($id | ascii_downcase)
-     and (.archiveFilename == null or .archiveFilename == $name)
-     and (.sha256 == null or (.sha256 | ascii_downcase) == $digest)
+     and (if $source == "info" then .archiveFilename == $name else .archiveFilename == null or .archiveFilename == $name end)
+     and (if $source == "info" then (.sha256 | ascii_downcase) == $digest else .sha256 == null or (.sha256 | ascii_downcase) == $digest end)
      and all(.issues[]?; .severity != "error")' \
     "$prefix.log.json" >/dev/null || nw_fail 'Accepted log does not match the recorded submission, filename, or submitted digest.'
 fi
-if [[ $status == Accepted && $wait_result != 0 ]] && transport_failure "$raw.wait.stderr"; then
+if [[ $status == Accepted && $observation_source == wait && $wait_result != 0 ]] && transport_failure "$raw.wait.stderr"; then
   disposition pending wait_transport true
 fi
-[[ $wait_result == 0 && $status == Accepted ]] || nw_fail "$stage is $status (wait exit $wait_result). Resume submission $submission; do not resubmit its archive."
+[[ $observation_result == 0 && $status == Accepted ]] || nw_fail "$stage is $status (wait exit $wait_result). Resume submission $submission; do not resubmit its archive."
 if [[ $log_result != 0 ]] && transport_failure "$raw.log.stderr"; then
   disposition pending log_transport true
 fi
